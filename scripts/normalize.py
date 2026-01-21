@@ -6,7 +6,9 @@ import numpy as np
 import numpydantic
 import pydantic
 
-
+'''
+它帮你把机器人数据里的 state / action 这些数字，算出“平均值、标准差（以及 1%/99% 分位数）”，存成 norm_stats.json，以后训练/推理时用来把数据缩放到差不多的范围。
+'''
 @pydantic.dataclasses.dataclass
 class NormStats:
     mean: numpydantic.NDArray

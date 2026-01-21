@@ -92,7 +92,7 @@ class QwenVlAct_Trainer:
     - Checkpoint saving and resuming
     - Comprehensive logging and monitoring
     """
-
+    # equal to __init__ = timer(__init__)
     @timer
     def __init__(
         self,
@@ -461,7 +461,9 @@ class QwenVlAct_Trainer:
         """
         # Initialize validation dataloader
         if getattr(self, "val_dataloader", None) is not None:
+            # 把 dataset 切到 eval 模式（常见用途：关掉训练增强、固定采样策略等）。
             self.dataset._eval()
+            # 给分布式 sampler 设定 epoch，用于确定性的 shuffle/切片；这里固定为 0，意味着每次验证都用同一套顺序，便于对比。
             self.val_sampler.set_epoch(0)
         else:
             self.val_dataloader, self.val_sampler = self.dataset.get_val_dataloader()
@@ -490,6 +492,11 @@ class QwenVlAct_Trainer:
                 }
 
             with torch.no_grad():
+                '''
+                mode="train"：注意这不是 model.train()，而是传给模型的一个内部分支参数
+                这里通常表示“用训练时同一套 loss 头/对齐方式来算 loss”，但不会启用 dropout
+                因为外面 self.model.eval() 已经设置了推理行为
+                '''
                 outputs = self.model(**batch, mode="train")
                 loss = outputs.loss
                 self.val_loss += self.accelerator.gather(loss.detach()).mean().item()

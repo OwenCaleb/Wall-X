@@ -69,8 +69,8 @@ class VQAWrapper(object):
 
 
 if __name__ == "__main__":
-    MODEL_PATH_FOR_MODULE_TEST = "/path/to/model"
-    train_config_path = "/path/to/config.yaml"
+    MODEL_PATH_FOR_MODULE_TEST = "/home/liwenbo/projects/VLA/wall-x/Pretrained_models/wall-oss-fast"
+    train_config_path = "/home/liwenbo/projects/VLA/wall-x/workspace/lerobot_example/config_qact.yml"
     with open(train_config_path, "r") as f:
         train_config = yaml.load(f, Loader=yaml.FullLoader)
     wrapper = VQAWrapper(
@@ -78,10 +78,19 @@ if __name__ == "__main__":
     )
 
     try:
-        test_question = "To move the red block in the plate with same color, what should you do next? Think step by step."
+        # test_question = "To move the red block in the plate with same color, what should you do next? Think step by step."
+        '''
+        Wall-Fast-Qwen25
+        model answer: To move the red block to the yellow plate, follow these steps:
+        1. Place the red block on the yellow plate.
+        2. Then, place the red block on the red plate.
+        This will ensure the red block is in the correct position relative to the yellow plate.
+        '''
+        
+        test_question="Locate the red block and the red plate. Please answer one by one: where is the red block (left/middle/right), and where is the red plate (left/middle/right)?"
 
         # Local Image
-        img = Image.open("/path/to/wall-x/assets/cot_example_frame.png").convert("RGB")
+        img = Image.open("/home/liwenbo/projects/VLA/wall-x/assets/cot_example_frame.png").convert("RGB")
         # Internet Image
         # import requests
         # test_image_url = "https://www.ilankelman.org/stopsigns/australia.jpg"
@@ -92,3 +101,4 @@ if __name__ == "__main__":
         print("model answer:", answer)
     except Exception as e:
         print(f"model answer fail: {e}")
+# CUDA_VISIBLE_DEVICES=3 python scripts/vqa_inference.py 

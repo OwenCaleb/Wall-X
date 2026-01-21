@@ -1,8 +1,18 @@
 import torch
 from wall_x.model.qwen2_5_based.modeling_qwen2_5_vl_act import Qwen2_5_VLMoEForAction
+import yaml
 
-model_path = "/path/to/model"
-model = Qwen2_5_VLMoEForAction.from_pretrained(model_path)
+'''
+smoke test系统最核心的功能是否“能跑起来”，而不是“是否完全正确”。
+用一堆假的输入（fake data）调用一次 WALL-OSS-FLOW 的前向推理，检查输出有没有 NaN/Inf、shape 对不对。
+'''
+
+cfg_path = "/home/liwenbo/projects/VLA/wall-x/workspace/lerobot_example/config_qact.yml"  # 用仓库自带示例配置先跑通
+with open(cfg_path, "r") as f:
+    train_config = yaml.safe_load(f)
+
+model_path = "/home/liwenbo/projects/VLA/wall-x/Pretrained_models/wall-oss-fast"
+model = Qwen2_5_VLMoEForAction.from_pretrained(model_path, train_config=train_config)
 model.eval()
 
 # Gen Fake data

@@ -7,6 +7,10 @@ import normalize
 import numpy as np
 import argparse
 
+'''
+把你的机器人数据里 state 和 action 的“平均值/标准差”算出来，存成一个文件。
+训练时用这个文件把数据“缩放到差不多的范围”，训练更稳、更容易收敛。
+'''
 
 def load_config(config_path):
     """Load configuration from YAML file."""
@@ -53,8 +57,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # Configs
-    path = "/path/to/config.yml"
-    output_path = "/path/to/output"
+    path = "/home/liwenbo/projects/VLA/wall-x/workspace/lerobot_example/config_qact.yml"
+    output_path = "/home/liwenbo/projects/VLA/wall-x/norm_stats"
     config = load_config(path)
     lerobot_config = config["data"]["lerobot_config"]
     repo_id = lerobot_config.get("repo_id", None)
@@ -76,4 +80,4 @@ if __name__ == "__main__":
 
     output_path = output_path + "/" + repo_id
     print(f"Writing stats to: {output_path}")
-    normalize.save(output_path, norm_stats)
+    normalize.save(output_path, norm_stats) # 对应normalize.load() 同一套格式

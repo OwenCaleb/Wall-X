@@ -4,9 +4,9 @@
 log_name: "robotic_training"
 log_project: "vla_training"
 model_type: qwen2_5
-pretrained_wallx_path: "/path/to/wallx_model/"  # Must set
-save_path: "/path/to/workspace/"                # Must set
-use_fast_tokenizer: True                       # True: train FAST, False: train Flow
+pretrained_wallx_path: "/home/liwenbo/.cache/huggingface/hub/models--X-Square-Robot--wall-oss-flow/snapshots/a4003288001825b10771cbc4b10b9c2315e9b862"  # Must set
+save_path: "/home/liwenbo/projects/VLA/wall-x/save_path_dir"                # Must set
+use_fast_tokenizer: False                       # True: train FAST, False: train Flow
 action_tokenizer_path: "/path/to/fast/"         # Must set if use_fast_tokenizer is true
 qwen_vl_act_config_path: "wall-x/workspace/lerobot_example/qwen25_config.json"
 
@@ -62,7 +62,7 @@ agent_pos_config:
 #   ckpt: "/path/to/resume_model/"
 #   load_ckpt_only: true
 
-norm_stats_path: "/path/to/norm_stats.json"
+norm_stats_path: "/home/liwenbo/projects/VLA/wall-x/norm_stats/lerobot/aloha_mobile_cabinet/norm_stats.json"
 
 enable_customized_robot_config: true
 customized_robot_config:

@@ -21,23 +21,24 @@ def load_config(config_path):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--pred_horizon", type=int, default=32)
-    parser.add_argument("--origin_action_dim", type=int, default=7)
+    parser.add_argument("--origin_action_dim", type=int, default=14)
     args = parser.parse_args()
 
     origin_action_dim = args.origin_action_dim
     pred_horizon = args.pred_horizon
 
     # get train config
-    model_path = "/path/to/model"
-    action_tokenizer_path = "/path/to/action/tokenizer"
-    save_dir = "/path/to/save/dir"
-    path = "/path/to/train/config"
+    model_path = "/home/liwenbo/projects/VLA/wall-x/Pretrained_models/wall-oss-fast"
+    action_tokenizer_path = "/home/liwenbo/projects/VLA/wall-x/fast"
+    save_dir = "/home/liwenbo/projects/VLA/wall-x/save_path_dir"
+    path = "workspace/lerobot_example/config_qact.yml"
     config = load_config(path)
 
     # load model with customized robot config
     model = Qwen2_5_VLMoEForAction.from_pretrained(
         model_path, train_config=config, action_tokenizer_path=action_tokenizer_path
     )
+ 
     model.eval()
     model = model.to("cuda")
     model = model.bfloat16()
