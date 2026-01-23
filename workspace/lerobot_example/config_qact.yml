@@ -103,7 +103,7 @@ data:
   # LeRobot dataset configuration
   lerobot_config:
     repo_id: "lerobot/aloha_mobile_cabinet"
-    root: /home/liwenbo/projects/VLA/wall-x/Datasets/lerobot/aloha_mobile_cabinet
+    root: /home/liwenbo/projects/VLA/wall-x/Datasets
     episodes: null
     image_transforms: null
     delta_timestamps: null

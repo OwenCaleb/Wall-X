@@ -136,34 +136,29 @@ if [[ $rc -ne 0 ]]; then
   exit "$rc"
 fi
 
+echo "[3/4] Create/update symlink at LINK_DIR -> REAL_DIR:"
+mkdir -p "$LINK_ROOT_DIR"
 
-echo "[3/4] Create/update symlink at LINK_ROOT_DIR -> REAL_ROOT_DIR:"
-mkdir -p "$(dirname "$LINK_ROOT_DIR")"
-
-if [[ -e "$LINK_ROOT_DIR" && ! -L "$LINK_ROOT_DIR" ]]; then
-  echo "ERROR: $LINK_ROOT_DIR exists and is not a symlink." >&2
+if [[ -e "$LINK_DIR" && ! -L "$LINK_DIR" ]]; then
+  echo "ERROR: $LINK_DIR exists and is not a symlink." >&2
   echo "Please move/remove it manually, then re-run this script." >&2
   exit 3
 fi
 
-ln -sfn "$REAL_ROOT_DIR" "$LINK_ROOT_DIR"
-
+ln -sfn "$REAL_DIR" "$LINK_DIR"
 
 echo "[4/4] Verify:"
-echo "  Symlink:"
-ls -l "$LINK_ROOT_DIR" || true
+ls -l "$LINK_DIR" || true
 
 echo "  Dataset dir exists?"
-if [[ -d "$LINK_ROOT_DIR/$DATASET_NAME" ]]; then
-  echo "  OK: $LINK_ROOT_DIR/$DATASET_NAME"
+if [[ -d "$LINK_DIR" ]]; then
+  echo "  OK: $LINK_DIR"
 else
-  echo "  MISSING: $LINK_ROOT_DIR/$DATASET_NAME" >&2
-  echo "  Listing LINK_ROOT_DIR:" >&2
-  ls -lah "$LINK_ROOT_DIR" || true
+  echo "  MISSING: $LINK_DIR" >&2
   exit 4
 fi
 
 echo "  Sample files (maxdepth=2):"
-find "$LINK_ROOT_DIR/$DATASET_NAME" -maxdepth 2 -type f | head -n 20
+find "$LINK_DIR" -maxdepth 2 -type f | head -n 20
 
 echo "Done."

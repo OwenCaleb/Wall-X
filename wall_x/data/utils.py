@@ -43,6 +43,15 @@ KEY_MAPPINGS = {
         "state": "observation.state",
         "action": "action",
     },
+    "g1custom": {
+        "camera": {
+            "observation.images.head_realsense_color": "face_view",
+            "observation.images.left_hand_realsense_color": "left_wrist_view",
+            "observation.images.right_hand_realsense_color": "right_wrist_view",
+        },
+        "state": "state",
+        "action": "action",
+    },
 }
 
 CAMERA_NAME_MAPPING = {

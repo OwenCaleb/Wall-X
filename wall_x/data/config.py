@@ -38,6 +38,7 @@ ACTION_DATASET_NAMES = [
     "viola",
     "physical-intelligence/libero",
     "lerobot/aloha_mobile_cabinet",
+    "g1custom"
 ]
 
 # Supported multimodal datasets

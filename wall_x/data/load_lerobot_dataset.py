@@ -19,7 +19,33 @@ from wall_x.data.utils import (
 from transformers import AutoProcessor
 from .utils import load_norm_stats, KEY_MAPPINGS
 
+
+
 T_co = TypeVar("T_co", covariant=True)
+
+
+import json
+from pathlib import Path
+
+def _resolve_modality_json_path(lerobot_config):
+    # 兼容不同命名：modality_json / modality_path
+    return lerobot_config.get("modality_json", None) or lerobot_config.get("modality_path", None)
+
+def _build_delta_timestamps(repo_id, dataset_fps, action_horizon, modality_json_path=None):
+    """
+    action_horizon: 训练侧希望的 horizon 长度，例如 32
+    return: dict[str, list[float]]
+    """
+    # 1) 有 modality.json：用 original_key 列表生成 delta_timestamps
+    if modality_json_path is not None and len(str(modality_json_path)) > 0:
+        modality = json.loads(Path(modality_json_path).read_text())
+        action_orig_keys = [cfg["original_key"] for cfg in modality["action"].values()]
+        return {k: [t / dataset_fps for t in range(action_horizon)] for k in action_orig_keys}
+
+    # 2) 没有 modality.json：保持旧行为
+    return {
+        KEY_MAPPINGS[repo_id]["action"]: [t / dataset_fps for t in range(action_horizon)]
+    }
 
 
 # Abstract class for dataset
@@ -468,27 +494,45 @@ def load_lerobot_data(
     ), "norm stats is required, please refer to 'wall-x/scripts/compute_norm_stats.py' to compute stats"
     norm_stats = load_norm_stats(norm_stats_path, repo_id)
 
-    delta_timestamps = {
-        # action chunk
-        KEY_MAPPINGS[repo_id]["action"]: [
-            t / dataset_fps
-            for t in range(dataload_config.get("action_horizon", 33) - 1)
-        ],
-    }
+    modality_json_path = _resolve_modality_json_path(lerobot_config)
+    horizon = dataload_config.get("action_horizon", 33) - 1  # 例如 32
+
+    delta_timestamps = _build_delta_timestamps(
+        repo_id=repo_id,
+        dataset_fps=dataset_fps,
+        action_horizon=horizon,
+        modality_json_path=modality_json_path,
+    )
+
     batch_size = config.get("batch_size_per_gpu", 8)
     episodes = np.arange(episodes_num).tolist()
 
     train_test_split = dataload_config.get("train_test_split", 0.95)
     train_episodes = episodes[: int(episodes_num * train_test_split)]
     test_episodes = episodes[int(episodes_num * train_test_split) :]
+    
+    if modality_json_path is not None and len(str(modality_json_path)) > 0:
+        from wall_x.data.modality_wrapper import ModalityAwareLeRobotDataset
 
-    train_dataset = LeRobotDataset(
-        repo_id,
-        root=root,
-        episodes=train_episodes,
-        delta_timestamps=delta_timestamps,
-        video_backend="pyav",
-    )
+        train_dataset = ModalityAwareLeRobotDataset(
+            repo_id=repo_id,
+            root=root,
+            episodes=train_episodes,
+            delta_timestamps=delta_timestamps,
+            video_backend="pyav",
+            modality_json=modality_json_path,
+            action_horizon=horizon,
+            state_key=KEY_MAPPINGS[repo_id]["state"],   # "state"
+            action_key=KEY_MAPPINGS[repo_id]["action"], # "action"
+        )
+    else:
+        train_dataset = LeRobotDataset(
+            repo_id,
+            root=root,
+            episodes=train_episodes,
+            delta_timestamps=delta_timestamps,
+            video_backend="pyav",
+        )
 
     if rank == 0:
         print(f"Selected train episodes: {train_dataset.episodes}")
@@ -647,21 +691,38 @@ def load_test_dataset(
     ), "norm stats is required, please refer to 'wall-x/scripts/compute_norm_stats.py' to compute stats"
     norm_stats = load_norm_stats(norm_stats_path, repo_id)
 
-    delta_timestamps = {
-        # action chunk
-        KEY_MAPPINGS[repo_id]["action"]: [
-            t / dataset_fps
-            for t in range(dataload_config.get("action_horizon", 33) - 1)
-        ],
-    }
+    modality_json_path = _resolve_modality_json_path(lerobot_config)
+    horizon = dataload_config.get("action_horizon", 33) - 1  # 例如 32
 
-    dataset = LeRobotDataset(
-        repo_id,
-        episodes=[episode],
-        delta_timestamps=delta_timestamps,
-        video_backend="pyav",
-        root=root,
+    delta_timestamps = _build_delta_timestamps(
+        repo_id=repo_id,
+        dataset_fps=dataset_fps,
+        action_horizon=horizon,
+        modality_json_path=modality_json_path,
     )
+    
+    if modality_json_path is not None and len(str(modality_json_path)) > 0:
+        from wall_x.data.modality_wrapper import ModalityAwareLeRobotDataset
+
+        dataset = ModalityAwareLeRobotDataset(
+            repo_id=repo_id,
+            root=root,
+            episodes=[episode],
+            delta_timestamps=delta_timestamps,
+            video_backend="pyav",
+            modality_json=modality_json_path,
+            action_horizon=horizon,
+            state_key=KEY_MAPPINGS[repo_id]["state"],   # "state"
+            action_key=KEY_MAPPINGS[repo_id]["action"], # "action"
+        )
+    else:
+        dataset = LeRobotDataset(
+            repo_id,
+            root=root,
+            episodes=[episode],
+            delta_timestamps=delta_timestamps,
+            video_backend="pyav",
+        )
 
     print(f"Selected episodes: {dataset.episodes}")
     print(f"Number of episodes selected: {dataset.num_episodes}")
