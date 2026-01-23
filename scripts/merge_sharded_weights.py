@@ -4,6 +4,12 @@ Custom script to merge FSDP sharded checkpoints with compatibility handling.
 Works around the StorageMeta compatibility issue between PyTorch versions.
 把用 FSDP（Fully Sharded Data Parallel）训练出来的“分片 checkpoint”（很多 .distcp 文件）合并成一个单文件模型权重（model.safetensors 或 pytorch_model.bin），并且专门处理不同 PyTorch 版本之间的兼容性问题。
 FSDP = 把模型“切成碎片”，并且在需要时再临时拼起来用。
+
+python scripts/merge_sharded_weights.py \
+/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/output_models/19/pytorch_model_fsdp_0 \
+/mnt/nas_ssd/data/wallx/models/wallx/wall-oss-flow
+
+
 """
 
 import os
