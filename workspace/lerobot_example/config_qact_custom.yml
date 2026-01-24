@@ -51,11 +51,11 @@ enable_customized_robot_config: true
 customized_robot_config:
   name: "g1custom"
   customized_dof_config:
-    joint_robot_position: 18
-    joint_gripper_position: 2
+    "action_joint_robot_position": 18
+    "action_joint_gripper_position": 2
   customized_agent_pos_config:
-    joint_robot_position: 18
-    joint_gripper_position: 2
+    "state_joint_robot_position": 18
+    "state_joint_gripper_position": 2
 
 # Data configuration
 data:
