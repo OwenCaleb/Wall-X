@@ -150,6 +150,31 @@ class Qwen2_5_VLConfig(PretrainedConfig):
     sub_configs = {"vision_config": Qwen2_5_VLVisionConfig}
     keys_to_ignore_at_inference = ["past_key_values"]
     # Default tensor parallel plan for base model `Qwen2_5_VL`
+    '''
+    输入X: [batch, seq_len, hidden_size]
+    权重W_q: [hidden_size, num_heads * head_dim]
+
+    按列切（colwise）：
+    - 每个GPU得到一部分注意力头
+    - GPU0: 头0-3, GPU1: 头4-7, ...
+    
+    输入: [batch, seq_len, num_heads * head_dim]  # 已经按头分片
+    输出: [batch, seq_len, hidden_size]           # 需要合并
+
+    按行切（rowwise）：
+    - 每个GPU处理输入的一部分
+    - 最后需要All-Reduce合并
+    
+    TP = Tensor Parallel
+    每个GPU：
+    - 存所有32层，但每层只存1/8权重
+    - 每层计算时8个GPU协作
+    - 通信频繁，但延迟低（同节点）
+    PP = Pipeline Parallel
+    每个GPU：
+    - 存4个完整层
+    - 层间通信，频率低
+    '''
     base_model_tp_plan = {
         "layers.*.self_attn.q_proj": "colwise",
         "layers.*.self_attn.k_proj": "colwise",
@@ -195,8 +220,10 @@ class Qwen2_5_VLConfig(PretrainedConfig):
         mlp_moe=False,
         **kwargs,
     ):
+        # vision_config = {"depth": 24, "patch_size": 14}
         if isinstance(vision_config, dict):
             self.vision_config = self.sub_configs["vision_config"](**vision_config)
+        # 走默认
         elif vision_config is None:
             self.vision_config = self.sub_configs["vision_config"]()
 
@@ -242,6 +269,7 @@ class Qwen2_5_VLConfig(PretrainedConfig):
             self.rope_scaling["rope_type"] = self.rope_scaling["type"]
         rope_config_validation(self, ignore_keys={"mrope_section"})
 
+        # 输入词向量矩阵（embedding）和输出词预测矩阵（lm_head）是否共享同一套参数。
         super().__init__(tie_word_embeddings=tie_word_embeddings, **kwargs)
 
 
