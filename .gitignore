@@ -268,3 +268,11 @@ NOTES.md
 .env
 .env.local
 .env.*.local
+
+# Custom Settings
+Pretrained_models/
+fast/
+lerobot/
+3rdparty/
+Datasets/
+

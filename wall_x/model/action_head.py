@@ -395,6 +395,7 @@ class ActionProcessor(nn.Module):
         )
 
         # Combine action and temporal embeddings
+        # 不是直接加然后线性投影，而是先拼接再投影
         concat_embed = torch.cat([action_embed, time_embed], dim=-1)
         concat_embed = self.w2(concat_embed)
         embed = self.w3(self.act_fn(concat_embed))

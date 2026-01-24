@@ -68,10 +68,27 @@ class Qwen2_5_VLACausalLMOutputWithPast(ModelOutput):
 
 class BlockSparseMLP(nn.Module):
     def __init__(self, config):
+        '''
+        SwiGLU = 用 SiLU 激活做 gate 的 GLU（门控线性单元）版本。
+        普通MLP结构：
+            先升维（hidden → intermediate）
+            激活
+            再降维回去
+        问题：
+            所有中间维度都一视同仁参与计算
+            表达力有限
+        
+        门控MLP
+            让网络自己决定哪些维度打开，哪些维度关闭
+            gate_proj + silu 产生 门控系数
+            up_proj 产生 内容向量
+            两者相乘得到 门控后的内容输出
+        '''
         super().__init__()
 
         self.hidden_size = config["hidden_size"]
         self.intermediate_size = config["intermediate_size"]
+        # hidden_act = 激活函数名（例如 "silu"）
         self.hidden_act = config["hidden_act"]
         self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
         self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
@@ -321,6 +338,7 @@ class Qwen2_5_VLMoEModel(Qwen2_5_VLPreTrainedModel):
         super().__init__(config)
 
         # Basic model parameters
+        # "[PAD]": 0,     # ← 填充符，padding_idx=0
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
 
@@ -341,6 +359,14 @@ class Qwen2_5_VLMoEModel(Qwen2_5_VLPreTrainedModel):
         self._attn_implementation = config._attn_implementation
         self.norm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.rotary_emb = Qwen2_5_VLRotaryEmbedding(config=config)
+        '''
+        前向传播：输入 → 层1 → 层2 → ... → 层100 → 输出
+        反向传播：需要每层的中间结果计算梯度
+
+        不检查点：保存100层的所有中间结果 → 显存爆炸！
+        检查点：只保存第1、25、50、75、100层的结果 → 省显存
+                其他层在反向传播时重新计算
+        '''
         self.gradient_checkpointing = False
 
         # Initialize weights and apply final processing
@@ -353,6 +379,132 @@ class Qwen2_5_VLMoEModel(Qwen2_5_VLPreTrainedModel):
             The token embedding layer
         """
         return self.embed_tokens
+
+    def _update_causal_mask(
+        self,
+        attention_mask: torch.Tensor,
+        input_tensor: torch.Tensor,
+        cache_position: torch.Tensor,
+        past_key_values: Cache,
+        output_attentions: bool,
+        moe_token_types: Optional[torch.LongTensor] = None,
+    ):
+        """Update causal attention mask with support for bidirectional attention for specific token types.
+
+        This method creates and modifies attention masks to support different attention patterns:
+        - Standard causal (unidirectional) attention for most tokens
+        - Bidirectional attention for specific token types (e.g., MoE routing tokens)
+
+        Args:
+            attention_mask: Input attention mask to avoid attending to padding tokens
+            input_tensor: Input embeddings tensor for shape and device information
+            cache_position: Position indices for caching mechanisms
+            past_key_values: Cached key-value pairs from previous forward passes
+            output_attentions: Whether attention weights will be returned
+            moe_token_types: Optional tensor indicating token types for MoE routing
+                            (type 1 tokens will use bidirectional attention)
+
+        Returns:
+            Updated causal attention mask, or None if using Flash Attention 2
+        """
+        # Flash Attention 2 handles masking internally
+        if self.config._attn_implementation == "flash_attention_2":
+            return None
+
+        # Calculate sequence lengths for cache management
+        past_seen_tokens = (
+            past_key_values.get_seq_length() if past_key_values is not None else 0
+        )
+        using_static_cache = isinstance(past_key_values, StaticCache)
+        using_sliding_window_cache = isinstance(past_key_values, SlidingWindowCache)
+
+        # For SDPA (Scaled Dot Product Attention), use `is_causal` argument when possible
+        # instead of explicit attention mask to enable Flash Attention 2 dispatch
+        # Note: This optimization is not compatible with static cache
+        if (
+            self.config._attn_implementation == "sdpa"
+            and not (using_static_cache or using_sliding_window_cache)
+            and not output_attentions
+        ):
+            # Check if we can ignore the causal mask and rely on SDPA's internal handling
+            if AttentionMaskConverter._ignore_causal_mask_sdpa(
+                attention_mask,
+                inputs_embeds=input_tensor,
+                past_key_values_length=past_seen_tokens,
+                sliding_window=self.config.sliding_window,
+                is_training=self.training,
+            ):
+                return None
+
+        # Extract tensor properties for mask creation
+        dtype, device = input_tensor.dtype, input_tensor.device
+        min_dtype = torch.finfo(dtype).min
+        sequence_length = input_tensor.shape[1]
+
+        # Determine target length based on cache type
+        if using_sliding_window_cache or using_static_cache:
+            # Use maximum cache shape for sliding window or static caches
+            target_length = past_key_values.get_max_cache_shape()
+        else:
+            # For dynamic cache or no cache, calculate based on attention mask or sequence length
+            target_length = (
+                attention_mask.shape[-1]
+                if isinstance(attention_mask, torch.Tensor)
+                else past_seen_tokens + sequence_length + 1
+            )
+
+        # Generate 4D causal attention mask from 2D input mask if provided
+        causal_mask = self._prepare_4d_causal_attention_mask_with_cache_position(
+            attention_mask,
+            sequence_length=sequence_length,
+            target_length=target_length,
+            dtype=dtype,
+            device=device,
+            cache_position=cache_position,
+            batch_size=input_tensor.shape[0],
+            config=self.config,
+            past_key_values=past_key_values,
+        )
+
+        # Modify mask to support bidirectional attention for specific token types
+        if moe_token_types is not None:
+            # Identify positions of type 1 tokens (MoE routing tokens)
+            type1_tokens = (
+                (moe_token_types == 1).unsqueeze(1).unsqueeze(2)
+            )  # Shape: [B, 1, 1, S]
+
+            # Create bidirectional attention region for type 1 tokens
+            # This allows type 1 tokens to attend to each other bidirectionally
+            type1_mask = torch.zeros_like(causal_mask)  # Shape: [B, num_heads, S, S]
+            type1_region = type1_tokens & type1_tokens.transpose(
+                -1, -2
+            )  # Shape: [B, 1, S, S]
+            type1_mask = type1_mask.masked_fill(type1_region, 1.0).to(torch.bool)
+
+            # Apply bidirectional attention: zero out causal constraints in type 1 regions
+            causal_mask = torch.where(
+                type1_mask,  # Where type 1 tokens interact with each other
+                torch.zeros_like(
+                    causal_mask
+                ),  # Remove causal masking (allow bidirectional)
+                causal_mask,  # Keep original causal masking for other regions
+            )
+
+        # Handle special case for SDPA with CUDA/XPU devices
+        if (
+            self.config._attn_implementation == "sdpa"
+            and attention_mask is not None
+            and attention_mask.device.type in ["cuda", "xpu"]
+            and not output_attentions
+        ):
+            # Ensure attention to all tokens in fully masked rows for memory-efficient attention
+            # This is required for F.scaled_dot_product_attention's memory-efficient path
+            # when using left padding. See: https://github.com/pytorch/pytorch/issues/110213
+            causal_mask = AttentionMaskConverter._unmask_unattended(
+                causal_mask, min_dtype
+            )
+
+        return causal_mask
 
     def set_input_embeddings(self, value: nn.Embedding) -> None:
         """Set the input embedding layer.
@@ -528,132 +680,6 @@ class Qwen2_5_VLMoEModel(Qwen2_5_VLPreTrainedModel):
             attentions=all_self_attns,
         )
 
-    def _update_causal_mask(
-        self,
-        attention_mask: torch.Tensor,
-        input_tensor: torch.Tensor,
-        cache_position: torch.Tensor,
-        past_key_values: Cache,
-        output_attentions: bool,
-        moe_token_types: Optional[torch.LongTensor] = None,
-    ):
-        """Update causal attention mask with support for bidirectional attention for specific token types.
-
-        This method creates and modifies attention masks to support different attention patterns:
-        - Standard causal (unidirectional) attention for most tokens
-        - Bidirectional attention for specific token types (e.g., MoE routing tokens)
-
-        Args:
-            attention_mask: Input attention mask to avoid attending to padding tokens
-            input_tensor: Input embeddings tensor for shape and device information
-            cache_position: Position indices for caching mechanisms
-            past_key_values: Cached key-value pairs from previous forward passes
-            output_attentions: Whether attention weights will be returned
-            moe_token_types: Optional tensor indicating token types for MoE routing
-                            (type 1 tokens will use bidirectional attention)
-
-        Returns:
-            Updated causal attention mask, or None if using Flash Attention 2
-        """
-        # Flash Attention 2 handles masking internally
-        if self.config._attn_implementation == "flash_attention_2":
-            return None
-
-        # Calculate sequence lengths for cache management
-        past_seen_tokens = (
-            past_key_values.get_seq_length() if past_key_values is not None else 0
-        )
-        using_static_cache = isinstance(past_key_values, StaticCache)
-        using_sliding_window_cache = isinstance(past_key_values, SlidingWindowCache)
-
-        # For SDPA (Scaled Dot Product Attention), use `is_causal` argument when possible
-        # instead of explicit attention mask to enable Flash Attention 2 dispatch
-        # Note: This optimization is not compatible with static cache
-        if (
-            self.config._attn_implementation == "sdpa"
-            and not (using_static_cache or using_sliding_window_cache)
-            and not output_attentions
-        ):
-            # Check if we can ignore the causal mask and rely on SDPA's internal handling
-            if AttentionMaskConverter._ignore_causal_mask_sdpa(
-                attention_mask,
-                inputs_embeds=input_tensor,
-                past_key_values_length=past_seen_tokens,
-                sliding_window=self.config.sliding_window,
-                is_training=self.training,
-            ):
-                return None
-
-        # Extract tensor properties for mask creation
-        dtype, device = input_tensor.dtype, input_tensor.device
-        min_dtype = torch.finfo(dtype).min
-        sequence_length = input_tensor.shape[1]
-
-        # Determine target length based on cache type
-        if using_sliding_window_cache or using_static_cache:
-            # Use maximum cache shape for sliding window or static caches
-            target_length = past_key_values.get_max_cache_shape()
-        else:
-            # For dynamic cache or no cache, calculate based on attention mask or sequence length
-            target_length = (
-                attention_mask.shape[-1]
-                if isinstance(attention_mask, torch.Tensor)
-                else past_seen_tokens + sequence_length + 1
-            )
-
-        # Generate 4D causal attention mask from 2D input mask if provided
-        causal_mask = self._prepare_4d_causal_attention_mask_with_cache_position(
-            attention_mask,
-            sequence_length=sequence_length,
-            target_length=target_length,
-            dtype=dtype,
-            device=device,
-            cache_position=cache_position,
-            batch_size=input_tensor.shape[0],
-            config=self.config,
-            past_key_values=past_key_values,
-        )
-
-        # Modify mask to support bidirectional attention for specific token types
-        if moe_token_types is not None:
-            # Identify positions of type 1 tokens (MoE routing tokens)
-            type1_tokens = (
-                (moe_token_types == 1).unsqueeze(1).unsqueeze(2)
-            )  # Shape: [B, 1, 1, S]
-
-            # Create bidirectional attention region for type 1 tokens
-            # This allows type 1 tokens to attend to each other bidirectionally
-            type1_mask = torch.zeros_like(causal_mask)  # Shape: [B, num_heads, S, S]
-            type1_region = type1_tokens & type1_tokens.transpose(
-                -1, -2
-            )  # Shape: [B, 1, S, S]
-            type1_mask = type1_mask.masked_fill(type1_region, 1.0).to(torch.bool)
-
-            # Apply bidirectional attention: zero out causal constraints in type 1 regions
-            causal_mask = torch.where(
-                type1_mask,  # Where type 1 tokens interact with each other
-                torch.zeros_like(
-                    causal_mask
-                ),  # Remove causal masking (allow bidirectional)
-                causal_mask,  # Keep original causal masking for other regions
-            )
-
-        # Handle special case for SDPA with CUDA/XPU devices
-        if (
-            self.config._attn_implementation == "sdpa"
-            and attention_mask is not None
-            and attention_mask.device.type in ["cuda", "xpu"]
-            and not output_attentions
-        ):
-            # Ensure attention to all tokens in fully masked rows for memory-efficient attention
-            # This is required for F.scaled_dot_product_attention's memory-efficient path
-            # when using left padding. See: https://github.com/pytorch/pytorch/issues/110213
-            causal_mask = AttentionMaskConverter._unmask_unattended(
-                causal_mask, min_dtype
-            )
-
-        return causal_mask
-
     @staticmethod
     def _prepare_4d_causal_attention_mask_with_cache_position(
         attention_mask: torch.Tensor,
@@ -742,6 +768,13 @@ class Qwen2_5_VLMoEForAction(Qwen2_5_VLForConditionalGeneration):
     and optional LoRA fine-tuning support.
     """
 
+    '''
+    核心概念：权重绑定（Weight Tying）
+    框架会自动找到对应的嵌入层
+    在语言模型中，通常会有一个：
+        输入嵌入层：将输入的 token ID 映射为向量表示（embed_tokens.weight）
+        输出头：将最后一个隐藏层的输出映射到词汇表的 logits（lm_head.weight）
+    '''
     _tied_weights_keys = ["lm_head.weight"]
     config_class = Qwen2_5_VLConfig
     _no_split_modules = ["Qwen2_5_VLDecoderLayer_with_MoE", "Qwen2_5_VLVisionBlock"]
@@ -786,7 +819,7 @@ class Qwen2_5_VLMoEForAction(Qwen2_5_VLForConditionalGeneration):
         )
 
         print("Customized robot config added")
-        pprint(action_statistic_dof)
+        pprint(action_statistic_dof[name])
 
     @classmethod
     def from_pretrained(
@@ -839,6 +872,7 @@ class Qwen2_5_VLMoEForAction(Qwen2_5_VLForConditionalGeneration):
         model.resize_token_embeddings(len(processor.tokenizer))
 
         # Load model state dict from safetensors file
+        # 注意多个safetensors文件产生混乱
         safetensor_files = glob.glob(
             os.path.join(pretrained_model_path, "*.safetensors")
         )
@@ -846,6 +880,9 @@ class Qwen2_5_VLMoEForAction(Qwen2_5_VLForConditionalGeneration):
         for file in safetensor_files:
             sd = load_file(file, device="cpu")
             # filter normalizer statistic params
+            # 原因1：归一化参数是数据集相关的
+            # 原因2：它们是统计量，不是模型参数
+            # 原因3：部署时需要重新计算
             del_keys = []
             for key in sd.keys():
                 if "action_preprocessor.normalizer" in key:
@@ -890,12 +927,15 @@ class Qwen2_5_VLMoEForAction(Qwen2_5_VLForConditionalGeneration):
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
         # Initialize loss function without reduction for channel-wise loss computation
+        # 不用 sum 或 mean，保留每个位置的损失值
         self.loss_fct = CrossEntropyLoss(reduction="none")
         self.flow_loss_weight = flow_loss_weight
         self.use_fast_tokenizer = use_fast_tokenizer
         self.processor = processor
 
         # Define action token IDs
+        # 只是把“哪些 token 属于 action 相关”先查出来并缓存成 ID 集合，方便训练时做判定/筛选/构造 label。
+        # 它不等价于“训练必须传入原始 fast token”。
         self.define_action_token_id()
 
         # Cache for rope deltas
@@ -1339,6 +1379,15 @@ class Qwen2_5_VLMoEForAction(Qwen2_5_VLForConditionalGeneration):
                 position_ids = position_ids.unsqueeze(0).expand(3, -1, -1)
 
         # Calculate token distribution across MoE expert groups
+        '''
+        num_experts = 3
+
+        moe_token_types =
+        [[0,0,1,1,0],
+        [2,2,0,1,1]]
+
+        group_size = [4, 4, 2]
+        '''
         group_size = torch.zeros(
             self.config.num_experts, dtype=torch.long, device="cpu"
         )
@@ -1355,6 +1404,17 @@ class Qwen2_5_VLMoEForAction(Qwen2_5_VLForConditionalGeneration):
 
             # Process image embeddings
             if pixel_values is not None:
+                '''
+                # inputs_embeds: [1, 7, 4096]
+                inputs_embeds = embed_tokens(input_ids)
+                # mask: [1,7]
+                mask = input_ids == image_token_id
+                mask.sum() == 2
+                # image_embeds: [2,4096]
+                image_embeds = self.visual(pixel_values)
+                # scatter 替换进去
+                inputs_embeds[mask] = image_embeds
+                '''
                 pixel_values = pixel_values.type(self.visual.dtype)
                 image_embeds = self.visual(pixel_values, grid_thw=image_grid_thw)
                 mask = input_ids == self.config.image_token_id

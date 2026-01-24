@@ -744,6 +744,16 @@ def update_action_statistics(
         agent_pos_value.append(v)
 
     # Calculate DOF indices and extract corresponding min/delta values
+    '''
+    # 1. 在开头添加0
+    [0] + dof_value  →  [0, 3, 3]
+
+    # 2. 转为numpy数组
+    np.array([0, 3, 3])  →  array([0, 3, 3])
+
+    # 3. 计算累积和
+    array([0, 3, 3]).cumsum()  →  array([0, 3, 6])
+    '''
     dof_idx = np.array([0] + dof_value).cumsum()
     for i in range(len(dof_idx) - 1):
         stats_dict[dof_key[i]] = {
@@ -759,6 +769,22 @@ def update_action_statistics(
             "delta": state_delta[agent_pos_idx[i] : agent_pos_idx[i + 1]],
         }
 
+    '''
+    stats_dict = {
+    "shoulder": {
+        "min": action_min[0:3],      # [-1.0, -0.5, -0.8]
+        "delta": action_delta[0:3]   # [2.0, 1.0, 1.6]
+    },
+    "elbow": {
+        "min": action_min[3:4],      # [-2.0]
+        "delta": action_delta[3:4]   # [4.0]
+    },
+    "wrist": {
+        "min": action_min[4:7],      # [-1.0, -1.5, -0.3]
+        "delta": action_delta[4:7]   # [2.0, 3.0, 0.6]
+    }
+    '''
+    
     # Use provided robot name or repo_id as the key
     robot_key = robot_name if robot_name is not None else repo_id
 
