@@ -299,16 +299,9 @@ class Qwen2_5_VLMoEModel(Qwen2_5_VLPreTrainedModel, ActionModelMixMin):
 
     def __init__(self, config: Qwen2_5_VLConfig, use_selective_recompute=False):
         super().__init__(config)
-<<<<<<< Updated upstream
         self.config = config
         self.use_selective_recompute = use_selective_recompute
         self.padding_idx = config.pad_token_id
-=======
-
-        # Basic model parameters
-        # "[PAD]": 0,     # ← 填充符，padding_idx=0 
-        self.padding_idx = config.pad_token_id # 疑问 debug : None?padding_idx=None 时，所有 token（包括 padding token）都会有可学习的嵌入向量，padding 位置也会参与梯度计算和参数更新，这通常不是我们想要的，会导致计算浪费和噪声。应该设置为 padding_idx=config.pad_token_id，这样 padding token 的嵌入会固定为全零向量且不参与训练。
->>>>>>> Stashed changes
         self.vocab_size = config.vocab_size
 
         self.embed_tokens = nn.Embedding(
@@ -787,13 +780,6 @@ class Qwen2_5_VLMoEForAction(
     and optional LoRA fine-tuning support.
     """
 
-    '''
-    核心概念：权重绑定（Weight Tying）
-    框架会自动找到对应的嵌入层
-    在语言模型中，通常会有一个：
-        输入嵌入层：将输入的 token ID 映射为向量表示（embed_tokens.weight）
-        输出头：将最后一个隐藏层的输出映射到词汇表的 logits（lm_head.weight）
-    '''
     _tied_weights_keys = ["lm_head.weight"]
     config_class = Qwen2_5_VLConfig
     _no_split_modules = ["Qwen2_5_VLDecoderLayer_with_MoE", "Qwen2_5_VLVisionBlock"]
@@ -838,7 +824,7 @@ class Qwen2_5_VLMoEForAction(
         )
 
         print("Customized robot config added")
-        pprint(action_statistic_dof[name])
+        pprint(action_statistic_dof)
 
     @classmethod
     def from_pretrained(
@@ -864,7 +850,6 @@ class Qwen2_5_VLMoEForAction(
         Returns:
             Qwen2_5_VLMoEForAction: Loaded model instance
         """
-<<<<<<< Updated upstream
         # Load model components from pretrained path
 
         if train_config is None:
@@ -890,12 +875,6 @@ class Qwen2_5_VLMoEForAction(
         if not is_train:
             model_config._attn_implementation = "sdpa"
 
-=======
-        # Load model components from pretrained path 这里似乎有点问题；没有读取 generation_config.json
-        config_path = os.path.join(pretrained_model_path, "config.json")
-        config = cls.config_class.from_pretrained(config_path)
-        processor = AutoProcessor.from_pretrained(pretrained_model_path, use_fast=True)
->>>>>>> Stashed changes
         if action_tokenizer_path is not None:
             processor.action_processor = AutoProcessor.from_pretrained(
                 action_tokenizer_path, trust_remote_code=True
@@ -921,7 +900,6 @@ class Qwen2_5_VLMoEForAction(
         model.resize_token_embeddings(len(processor.tokenizer))
 
         # Load model state dict from safetensors file
-        # 注意多个safetensors文件产生混乱
         safetensor_files = glob.glob(
             os.path.join(pretrained_model_path, "*.safetensors")
         )
@@ -930,13 +908,10 @@ class Qwen2_5_VLMoEForAction(
         for file in safetensor_files:
             sd = load_file(file, device="cpu")
             # filter normalizer statistic params
-            # 原因1：归一化参数是数据集相关的
-            # 原因2：它们是统计量，不是模型参数
-            # 原因3：部署时需要重新计算
             del_keys = []
             for key in sd.keys():
                 if "action_preprocessor.normalizer" in key:
-                    # print(f"filter load model weight {key}")
+                    print(f"filter load model weight {key}")
                     del_keys.append(key)
                 if "embed_tokens.weight" in key:
                     embed_tokens_size = sd[key].shape[0]
@@ -971,7 +946,7 @@ class Qwen2_5_VLMoEForAction(
             action_mapper: Action mapping utility
             flow_loss_weight (float): Weight for flow loss computation
         """
-        super().__init__(config) #原来这个超级花时间
+        super().__init__(config)
 
         # Initialize vision transformer and language model components
         self.visual = Qwen2_5_VisionTransformerPretrainedModel._from_config(
@@ -984,15 +959,12 @@ class Qwen2_5_VLMoEForAction(
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
         # Initialize loss function without reduction for channel-wise loss computation
-        # 不用 sum 或 mean，保留每个位置的损失值
         self.loss_fct = CrossEntropyLoss(reduction="none")
         self.flow_loss_weight = flow_loss_weight
         self.use_fast_tokenizer = use_fast_tokenizer
         self.processor = processor
 
         # Define action token IDs
-        # 只是把“哪些 token 属于 action 相关”先查出来并缓存成 ID 集合，方便训练时做判定/筛选/构造 label。
-        # 它不等价于“训练必须传入原始 fast token”。
         self.define_action_token_id()
         self.times_cache = {}  # cache times linspace for each num_inference_timesteps
 
@@ -1409,17 +1381,6 @@ class Qwen2_5_VLMoEForAction(
         if inputs_embeds is None:
             inputs_embeds = self.model.embed_tokens(input_ids)
             if pixel_values is not None:
-                '''
-                # inputs_embeds: [1, 7, 4096]
-                inputs_embeds = embed_tokens(input_ids)
-                # mask: [1,7]
-                mask = input_ids == image_token_id
-                mask.sum() == 2
-                # image_embeds: [2,4096]
-                image_embeds = self.visual(pixel_values)
-                # scatter 替换进去
-                inputs_embeds[mask] = image_embeds
-                '''
                 pixel_values = pixel_values.type(self.visual.dtype)
                 image_embeds = self.visual(pixel_values, grid_thw=image_grid_thw)
                 mask = input_ids == self.config.image_token_id
@@ -1452,29 +1413,9 @@ class Qwen2_5_VLMoEForAction(
                 )
                 inputs_embeds = inputs_embeds.masked_scatter(video_mask, video_embeds)
 
-<<<<<<< Updated upstream
             inputs_embeds = self.scatter_proprioception_embeddings(
                 input_ids, inputs_embeds, proprioception, dataset_names, agent_pos_mask
             )
-=======
-            # Process action chunk data
-            '''
-            它隐含假设：只要 action_chunk 不为 None，每个样本一定都有固定数量的 <|action|> token。
-            你现在的数据构造破坏了这个假设。
-            '''
-            if action_chunk is not None:
-                action_chunk = action_chunk.to(inputs_embeds.device).to(
-                    inputs_embeds.dtype
-                )
-                dof_mask = dof_mask.to(inputs_embeds.device).to(inputs_embeds.dtype)
-                noisy_action_emb, flow = self.action_preprocessor(
-                    action_chunk, dataset_names, dof_mask
-                )
-                mask = input_ids == self.action_token_id_set["action_token_id"]
-                mask_unsqueezed = mask.unsqueeze(-1)
-                mask_expanded = mask_unsqueezed.expand_as(inputs_embeds)
-                action_mask = mask_expanded.to(inputs_embeds.device)
->>>>>>> Stashed changes
 
             inputs_embeds, flow, adarms_cond = self.scatter_flow_action_embeddings(
                 input_ids, inputs_embeds, action_chunk, dataset_names, dof_mask

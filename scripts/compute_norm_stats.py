@@ -1,155 +1,183 @@
-import yaml
-import torch
-import tqdm
-import numpy as np
-import argparse
+#!/usr/bin/env python3
+
 import json
+import logging
+from collections import defaultdict
 from pathlib import Path
+from typing import Dict, List
+from tqdm import tqdm
 
-from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
-from wall_x.data.load_lerobot_dataset import KEY_MAPPINGS
-import normalize
-"""
-Compute (mean/std) norm stats for state/action and save as normalize.save() format.
+import numpy as np
 
-Key idea:
-- For legacy LeRobot datasets, state/action columns already exist (KEY_MAPPINGS points to them).
-- For your custom dataset that stores high-dimensional signals as many `observation.ts.*` columns,
-  we use a *ModalityAwareLeRobotDataset* (subclass of LeRobotDataset) to inject unified keys
-  (e.g. "state" / "action") based on modality.json, without breaking LeRobotDataset behaviors.
-"""
+from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
 
-def load_config(config_path: str) -> dict:
-    with open(config_path, "r") as f:
-        config = yaml.load(f, Loader=yaml.FullLoader)
-    config["data"]["model_type"] = config.get("model_type")
-    return config
-def resolve_modality_json(args, lerobot_config: dict) -> str | None:
-    """
-    Priority:
-      1) CLI --modality_json
-      2) config: data.lerobot_config.modality_json
-      3) config: data.lerobot_config.modality_path (older naming)
-    """
-    if args.modality_json is not None and len(args.modality_json) > 0:
-        return args.modality_json
-
-    for k in ["modality_json", "modality_path", "modality"]:
-        v = lerobot_config.get(k, None)
-        if isinstance(v, str) and len(v) > 0:
-            return v
-
-    return None
-
-
-def build_delta_timestamps(repo_id: str, root: str, action_horizon: int, modality_json_path: str | None):
-    """
-    delta_timestamps 的意义（直观解释）：
-    - LeRobotDataset 支持“在 __getitem__ 时，帮你把未来 t=1..H 的 action 也取出来”
-    - 你给它一个 dict: { column_name: [0.0, 0.1, 0.2, ...] }，它就会在同一 episode 内根据 timestamp
-      计算这些未来帧的索引，并返回一个 shape [H, D] 的张量。
-
-    我们这里的用法：
-    - 如果提供了 modality.json，我们把里面 action 的 original_key 都加进 delta_timestamps
-      这样 LeRobotDataset 会直接返回这些 original_key 对应的 [H, D]，后面 wrapper 拼接更快更稳。
-    """
-    meta = LeRobotDatasetMetadata(repo_id, root)
-    fps = meta.fps
-
-    if modality_json_path is None:
-        return None
-
-    modality = json.loads(Path(modality_json_path).read_text())
-    action_orig_keys = [cfg["original_key"] for cfg in modality.get("action", {}).values()]
-
-    # offset seconds: [0/fps, 1/fps, ..., (H-1)/fps]
-    offsets = [t / fps for t in range(int(action_horizon))]
-    return {k: offsets for k in action_orig_keys}
-def load_lerobot_dataset(repo_id: str, root: str, action_horizon: int, modality_json_path: str | None, args):
-    # --- build delta_timestamps (optional) ---
-    delta_timestamps = build_delta_timestamps(
-        repo_id=repo_id,
-        root=root,
-        action_horizon=action_horizon,
-        modality_json_path=modality_json_path,
+def write_json(path: Path, data: Dict) -> None:
+    path.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
     )
 
-    # --- dataset ---
-    if modality_json_path is not None:
-        from wall_x.data.modality_wrapper import ModalityAwareLeRobotDataset
 
-        dataset = ModalityAwareLeRobotDataset(
-            repo_id,
-            root=root,
-            delta_timestamps=delta_timestamps,
-            video_backend="pyav",
-            modality_json=modality_json_path,
-            action_horizon=action_horizon,
-            # IMPORTANT: keep legacy mapping interface
-            state_key=KEY_MAPPINGS[repo_id]["state"],
-            action_key=KEY_MAPPINGS[repo_id]["action"],
-        )
-    else:
-        dataset = LeRobotDataset(
-            repo_id,
-            root=root,
-            delta_timestamps=delta_timestamps,
-            video_backend="pyav",
-        )
+def compute_action_statistics(
+    action_data_by_robot: Dict[str, Dict[str, List]]
+) -> Dict[str, Dict[str, Dict]]:
+    """
+    Compute statistics (min, q01, q99, max) for each action type and dimension.
 
-    num_batches = len(dataset) // args.batch_size
+    Args:
+        action_data_by_robot: Dict[robot_id][action_type] -> list of arrays/lists
 
-    generator = torch.Generator()
-    generator.manual_seed(args.seed)
+    Returns:
+        Dict[robot_id][action_type] -> {
+            "min": [min for each dim],
+            "q01": [quantile 1% for each dim],
+            "q99": [quantile 99% for each dim],
+            "max": [max for each dim],
+            "delta": [max - min for each dim]
+            "delta_q99_q01": [q99 - q01 for each dim]
+        }
+    """
+    stats = {}
 
-    data_loader = torch.utils.data.DataLoader(
-        dataset,
-        batch_size=args.batch_size,
-        shuffle=False,
-        drop_last=True,
-        generator=generator,
-        num_workers=args.num_workers,
-        persistent_workers=True if args.num_workers > 0 else False,
+    for robot_id, action_data in action_data_by_robot.items():
+        stats[robot_id] = {}
+
+        for action_type, values_list in action_data.items():
+            if not values_list:
+                continue
+
+            # Convert to numpy array: shape (num_samples, num_dims)
+            try:
+                values_array = np.array(values_list)
+                if values_array.size == 0:
+                    continue
+
+                # Handle both 1D and 2D cases
+                if values_array.ndim == 1:
+                    values_array = values_array.reshape(-1, 1)
+                elif values_array.ndim == 2:
+                    pass
+                else:
+                    logging.warning(
+                        f"Unexpected shape for {robot_id}/{action_type}: {values_array.shape}"
+                    )
+                    continue
+
+                # Compute statistics for each dimension
+                min_vals = np.min(values_array, axis=0).tolist()
+                max_vals = np.max(values_array, axis=0).tolist()
+                q01_vals = np.quantile(values_array, 0.01, axis=0).tolist()
+                q99_vals = np.quantile(values_array, 0.99, axis=0).tolist()
+                delta_vals = (np.array(max_vals) - np.array(min_vals)).tolist()
+                delta_q99_q01_vals = (np.array(q99_vals) - np.array(q01_vals)).tolist()
+
+                stats[robot_id][action_type] = {
+                    "min": min_vals,
+                    "q01": q01_vals,
+                    "q99": q99_vals,
+                    "max": max_vals,
+                    "delta": delta_vals,
+                    "delta_q99_q01": delta_q99_q01_vals,
+                }
+
+            except Exception as e:
+                logging.warning(
+                    f"Error computing statistics for {robot_id}/{action_type}: {e}"
+                )
+                continue
+
+    return stats
+
+
+def load_lerobot_dataset(
+    repo_id: str,
+    trajectory_keys: Dict,
+    base_dir: Path,
+) -> None:
+
+    # Load local or remote dataset
+    dataset = LeRobotDataset(base_dir)
+
+    # Iterate through all data
+    frames: Dict[str, Dict[str, List]] = defaultdict(lambda: defaultdict(list))
+
+    all_features = dataset.features
+    non_image_columns = [col for col in all_features if "image" not in col]
+
+    print(f"Reading the following fields:{non_image_columns}")
+    fast_dataset = dataset.hf_dataset.select_columns(non_image_columns)
+
+    for i in tqdm(range(len(fast_dataset))):
+        sample = fast_dataset[i]
+        action = sample["action"]  # torch.Tensor
+        propri = sample["observation.state"]
+
+        for key, action_keys in trajectory_keys.items():
+            for action_key, action_range in action_keys.items():
+                if key == "action":
+                    frames[repo_id][action_key].append(
+                        action[action_range[0] : action_range[1]].numpy().tolist()
+                    )
+                else:
+                    frames[repo_id][action_key].append(
+                        propri[action_range[0] : action_range[1]].numpy().tolist()
+                    )
+
+    return frames
+
+
+def compute_action_normalizer(
+    repo_id: str, trajectory_keys: Dict, base_dir: Path, output_dir: Path
+) -> None:
+    """
+    Compute action normalizer statistics for all robot_ids.
+    """
+    logging.info("Starting action normalizer computation...")
+
+    frames = load_lerobot_dataset(repo_id, trajectory_keys, base_dir)
+
+    # Compute statistics
+    stats = compute_action_statistics(frames)
+
+    # Save statistics for each robot_id
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # for robot_id, robot_stats in stats.items():
+    #     output_file = output_dir / f"{robot_id}_action_stats.json"
+    #     write_json(output_file, robot_stats)
+    #     logging.info(f"Saved action statistics for {robot_id} to {output_file}")
+
+    # Also save a combined file
+    combined_output = output_dir / "all_robots_action_stats.json"
+    write_json(combined_output, stats)
+    logging.info(f"Saved combined action statistics to {combined_output}")
+
+
+def main() -> None:
+
+    repo_id = "xxx"  # your dataset name
+    data_root_path = "/path/to/lerobot/dataset"
+    output_stats_dir = "/path/to/save/action_stats"
+    trajectory_keys = {  # your dataset keys
+        "action": {
+            "follow_right_ee_cartesian_pos": [0, 3],
+            "follow_right_ee_rotation": [3, 6],
+            "follow_right_gripper": [6, 7],
+        },
+        "propri": {
+            "master_right_ee_cartesian_pos": [0, 3],
+            "master_right_ee_rotation": [3, 6],
+            "master_right_gripper": [6, 7],
+        },
+    }
+
+    compute_action_normalizer(
+        repo_id, trajectory_keys, data_root_path, output_stats_dir
     )
-    return data_loader, num_batches
+    logging.info("Action normalizer computation completed.")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--batch_size", type=int, default=256)
-    parser.add_argument("--num_workers", type=int, default=2)
-    parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--modality_json", type=str, default=None)
-    parser.add_argument("--config", type=str, default="/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/workspace/lerobot_example/config_qact_custom.yml")
-    parser.add_argument("--output_dir", type=str, default="/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/norm_stats")
-    args = parser.parse_args()
-
-    config = load_config(args.config)
-    lerobot_config = config["data"]["lerobot_config"]
-
-    repo_id = lerobot_config.get("repo_id", None)
-    root = lerobot_config.get("root", None)
-    assert repo_id is not None, "repo_id is required"
-    assert root is not None, "root is required"
-
-    action_horizon = int(config["data"].get("action_horizon", 32))
-    modality_json_path = resolve_modality_json(args, lerobot_config)
-
-    data_loader, num_batches = load_lerobot_dataset(repo_id, root, action_horizon, modality_json_path, args)
-
-    # compute stats on unified mapping keys
-    keys = ["state", "action"]
-    stats = {k: normalize.RunningStats() for k in keys}
-
-    for batch in tqdm.tqdm(data_loader, total=num_batches, desc="Computing stats"):
-        for k in keys:
-            mapped_key = KEY_MAPPINGS[repo_id][k]
-            stats[k].update(np.asarray(batch[mapped_key]))
-
-    norm_stats = {KEY_MAPPINGS[repo_id][k]: stats[k].get_statistics() for k in keys}
-
-    out_dir = Path(args.output_dir) / repo_id
-    out_dir.mkdir(parents=True, exist_ok=True)
-    print(f"Writing stats to: {out_dir}")
-    normalize.save(str(out_dir), norm_stats)
+    main()

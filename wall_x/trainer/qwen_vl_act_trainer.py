@@ -126,7 +126,7 @@ class QwenVlAct_Trainer:
     - Checkpoint saving and resuming
     - Comprehensive logging and monitoring
     """
-    # equal to __init__ = timer(__init__)
+
     @timer
     def __init__(
         self,
@@ -192,7 +192,7 @@ class QwenVlAct_Trainer:
         print(
             f"rank {self.accelerator.process_index} after load model memory usage: {torch.cuda.memory_allocated() / 1024 ** 3:.2f} GB",
             flush=True,
-        )# Debug : rank 0 after load model memory usage: 7.98 GB
+        )
 
         # Load training data
         self.load_qact_data()
@@ -524,9 +524,7 @@ class QwenVlAct_Trainer:
         """
         # Initialize validation dataloader
         if getattr(self, "val_dataloader", None) is not None:
-            # 把 dataset 切到 eval 模式（常见用途：关掉训练增强、固定采样策略等）。
             self.dataset._eval()
-            # 给分布式 sampler 设定 epoch，用于确定性的 shuffle/切片；这里固定为 0，意味着每次验证都用同一套顺序，便于对比。
             self.val_sampler.set_epoch(0)
         else:
             self.val_dataloader, self.val_sampler = self.dataset.get_val_dataloader()
@@ -555,11 +553,6 @@ class QwenVlAct_Trainer:
                 }
 
             with torch.no_grad():
-                '''
-                mode="train"：注意这不是 model.train()，而是传给模型的一个内部分支参数
-                这里通常表示“用训练时同一套 loss 头/对齐方式来算 loss”，但不会启用 dropout
-                因为外面 self.model.eval() 已经设置了推理行为
-                '''
                 outputs = self.model(**batch, mode="train")
                 loss = outputs.loss
                 self.val_loss += self.accelerator.gather(loss.detach()).mean().item()
@@ -601,13 +594,8 @@ class QwenVlAct_Trainer:
             self.processor = model.processor
             model = model.to(torch.bfloat16)
         elif model_type == "qwen2_5":
-<<<<<<< Updated upstream
 
             model_config = Qwen2_5_VLConfig.from_pretrained(
-=======
-            # 使用原本路径‘pretrained_wallx_path’（本应该是qwen吧）下的processor，然后把真实fast处理好的tokenizer复制到原始tokenizer
-            config = Qwen2_5_VLConfig.from_pretrained(
->>>>>>> Stashed changes
                 self.config["qwen_vl_act_config_path"]
             )
             flow_loss_weight = self.config.get("flow_loss_weight", 1.0)
@@ -669,7 +657,8 @@ class QwenVlAct_Trainer:
             model = model.to(torch.bfloat16)
         else:
             raise NotImplementedError(f"Invalid model type: {model_type}")
-        # Configure optimizer based on training strategy 配置只训练特定部分
+
+        # Configure optimizer based on training strategy
         if "freeze_vlm" in self.config and self.config["freeze_vlm"]:
             print("Freezing VLM parameters, training only MoE experts", flush=True)
             moe_params = []
@@ -682,7 +671,7 @@ class QwenVlAct_Trainer:
             self.optimizer = AdamW(param_groups, weight_decay=0.1)
 
         elif "action_expert_learning_rate" in self.config:
-            # Separate learning rates for VLM and action expert（单独的MOE，但是把这个叫做action expert...） parameters
+            # Separate learning rates for VLM and action expert parameters
             moe_params = []
             vlm_params = []
             for name, param in model.named_parameters():
@@ -761,7 +750,7 @@ class QwenVlAct_Trainer:
         Supports LeRobot dataset format and handles distributed data loading
         across multiple processes.
         """
-        # print(f"Loading Vision-Language-Action data from {__file__}")
+        print(f"Loading Vision-Language-Action data from {__file__}")
         self.accelerator.wait_for_everyone()
 
         # Load LeRobot dataset
