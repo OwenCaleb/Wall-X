@@ -539,8 +539,11 @@ class ActionProcessor(nn.Module):
         self.config = config
         self.dof_config = config.dof_config
         self.agent_pos_config = config.agent_pos_config
-        self.action_dim = sum([v for k, v in self.dof_config.items()])
-        self.propri_dim = sum([v for k, v in self.agent_pos_config.items()])
+        # self.action_dim = sum([v for k, v in self.dof_config.items()])
+        # self.propri_dim = sum([v for k, v in self.agent_pos_config.items()])
+        # 硬编码 以微调训练好的模型
+        self.action_dim = 20
+        self.propri_dim = 20
 
         print_rank_last(
             f"self.dof_config: {self.dof_config}; action_dim: {self.action_dim}; self.agent_pos_config: {self.agent_pos_config}; propri_dim: {self.propri_dim}"

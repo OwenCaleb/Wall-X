@@ -4,10 +4,13 @@
 log_name: "robotic_training"
 log_project: "vla_training"
 model_type: wall-oss
-pretrained_wallx_path: "/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/Pretrained_models/wall-oss-flow"  # Must set
-save_path: "/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/output_models/2621_flow"                # Must set
+pretrained_wallx_path: "/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/wallx/models/wallx/wall-oss-flow"  # Must set
+save_path: "/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/output_models/2628_flow"                # Must set
 use_fast_tokenizer: False                       # True: train FAST, False: train Flow
 action_tokenizer_path: "/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/fast"         # Must set if use_fast_tokenizer is true
+processor_path: "/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/wallx/models/wallx/wall-oss-flow"
+
+freeze_vlm: false
 
 # Torch Profile
 profile: False
@@ -32,30 +35,36 @@ epoch_save_interval: 10
 FSDP2: True
 torch_compile: False
 
+# 用于对齐连接 computes_norms.py 的产物（里面的字段要与下面相同），以正确初始化内部 Normalizer 的json读取 在 Normalizer 进行的多维度散装拼接成整体；由于ActionProcessor涉及到载入模型参数，内部逻辑是读取这里sum,这里我在相应文件处硬编码为20以适配，因此也就不再需要指定到20维度以加载预训练模型
 dof_config:
-  joint_robot_position: 18
-  joint_gripper_position: 2
+  observation.ts.actions_joint_robot_position: 17
+  observation.ts.actions_joint_gripper_position: 2
+  # dummy_joint: 1
 
 agent_pos_config:
-  joint_robot_position: 18
-  joint_gripper_position: 2
+  observation.ts.observations_joint_robot_position: 17
+  observation.ts.observations_joint_gripper_position: 2
+  # dummy_joint: 1
 
 # # Checkpoint resuming configuration
 # resume:
 #   ckpt: "/path/to/resume_model/"
 #   load_ckpt_only: true
 
-norm_stats_path: "/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/norm_stats/g1custom/norm_stats.json"
+norm_stats_path: "/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/norm_stats/all_robots_action_stats.json"
 
+# 新版本这个似乎不是很需要了
 enable_customized_robot_config: true
 customized_robot_config:
   name: "g1custom"
   customized_dof_config:
-    "action_joint_robot_position": 18
+    "action_joint_robot_position": 17
     "action_joint_gripper_position": 2
+    # "dummy_joint": 1
   customized_agent_pos_config:
-    "state_joint_robot_position": 18
+    "state_joint_robot_position": 17
     "state_joint_gripper_position": 2
+    # "dummy_joint": 1
 
 # Data configuration
 data:
@@ -64,7 +73,7 @@ data:
   # LeRobot dataset configuration
   lerobot_config:
     repo_id: "g1custom"
-    root: /mnt/nas_ssd/data/wallx/data/g1/lerobot/Teleop_251103_sort_Anonymous_10Hz_subtask_v2
+    root: /mnt/nas_ssd/workspace/wenboli/projects/Wall-X/wallx/data/g1_new/lerobot/Teleop_251103_Sort_Anonymous_10Hz_refactorized
     episodes: null
     image_transforms: null
     delta_timestamps: null
@@ -73,19 +82,20 @@ data:
     force_cache_sync: false
     download_videos: false
     video_backend: pyav
-    modality_json: "/mnt/nas_ssd/data/wallx/data/g1/lerobot/Teleop_251103_sort_Anonymous_10Hz_subtask_v2/meta/modality.json"
+    modality_json: "/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/wallx/data/g1_new/lerobot/Teleop_251103_Sort_Anonymous_10Hz_refactorized/meta/modality.json"
+
 
   action_horizon: 32
   train_test_split: 0.95
 
-  # Action keys for observation and prediction
+  # Action keys for observation and prediction 用于构造 PreprocessedDataset 使用
   obs_action_keys:
-    - joint_robot_position
-    - joint_gripper_position
+    - state_joint_robot_position
+    - state_joint_gripper_position
 
   predict_action_keys:
-    - joint_robot_position
-    - joint_gripper_position
+    - action_joint_robot_position
+    - action_joint_gripper_position
 
 
   # Image resolution configuration for different camera views

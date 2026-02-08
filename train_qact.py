@@ -16,7 +16,7 @@ from wall_x.trainer.qwen_vl_act_trainer import QwenVlAct_Trainer
 
 def setup_environment():
     """Set up environment variables for training."""
-    # 禁用 tokenizer 多线程并行，避免 tokenizer 警告和潜在死锁/卡顿。
+    # 是为了 防止 tokenizer 内部多线程与训练多进程冲突，避免 警告、卡死、死锁，换取 更稳定的训练运行。
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 

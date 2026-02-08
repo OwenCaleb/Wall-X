@@ -179,7 +179,7 @@ class QwenVlAct_Trainer:
         self.dataload_config = get_data_configs(self.config["data"])
         self.data_config_path = data_config_path
         self.use_fast_tokenizer = self.config.get("use_fast_tokenizer", False)
-        self.use_selective_recompute = self.config.get("use_selective_recompute", False)
+        self.use_selective_recompute = self.config.get("use_selective_recompute", False) #保存“部分”前向中间结果（activation），而不是全部；反向传播时，对没保存的那部分再跑一遍前向把它算回来。
 
         # Load model and initialize training components
         self.load_normalizer()
@@ -243,7 +243,7 @@ class QwenVlAct_Trainer:
             self.config["dof_config"],
             min_key=self.config.get("min_key", "min"),
             delta_key=self.config.get("delta_key", "delta"),
-        )
+        ) # 维度拼接后统一放在torch上；映射g1custom->min；g1custom->delta
 
         print("self.normalizer_action.min: ", self.normalizer_action)
         self.normalizer_propri = Normalizer(

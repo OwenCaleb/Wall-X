@@ -762,15 +762,15 @@ class ActionGenerationMixin(GenerationMixin):
 
     def compute_loss(
         self,
-        hidden_states,
-        logits,
-        input_ids=None,
+        hidden_states, # transformer 输出的最后一层 hidden states，形状常见是 [B, S, H] [8, 244, 2048]
+        logits, # lm_head(hidden_states) 的输出，形状 [B, S, V] [8, 244, 153715]
+        input_ids=None, # 原始 token id [B, S] [8, 244]，主要用于找 <|action|> token 的位置
         dataset_names=None,
-        labels=None,
-        action_chunk=None,
-        dof_mask=None,
-        flow=None,
-        flow_loss_mask=None,
+        labels=None, # LM 的监督目标 [B, S]，用 -100 表示 ignore（HF 习惯）
+        action_chunk=None, # 连续动作序列（ground truth），形状通常 [B, T, A] [8, 32, 20]（T=horizon, A=action_dim）
+        dof_mask=None, # 针对动作维度的 mask（跨机器人 DoF 不一致时用），形状你后面 reshape 暗示是 [B, T, A] [8, 32, 20] 或 broadcastable
+        flow=None, # 在 scatter_flow_action_embeddings 里返回的东西，[8, 32, 20] 这里用作 flow matching 的目标或条件
+        flow_loss_mask=None, # 对 flow loss 的额外 mask（比如 padding timestep，或者只算部分动作维度） 目前是None
         **kwargs,
     ):
         if input_ids is not None:
@@ -779,29 +779,31 @@ class ActionGenerationMixin(GenerationMixin):
         loss = 0
         cross_entropy_loss, flow_loss = None, None
 
-        # if dataset_names is not None:
-        #     unique_datasets_name = list(set(dataset_names))
-        #     channel_loss_dict = {
-        #         dataset_name: torch.tensor(0.0, device=logits.device)
-        #         for dataset_name in _ACTION_DATASET_NAMES + _MULTIMODAL_DATASET_NAMES
-        #     }
-        #     channel_loss_count_dict = {
-        #         dataset_name: torch.tensor(0, device=logits.device)
-        #         for dataset_name in _ACTION_DATASET_NAMES + _MULTIMODAL_DATASET_NAMES
-        #     }
-        # else:
-        unique_datasets_name, channel_loss_dict, channel_loss_count_dict = (
-            None,
-            None,
-            None,
-        )
+        if dataset_names is not None:
+            unique_datasets_name = list(set(dataset_names))
+            channel_loss_dict = {
+                dataset_name: torch.tensor(0.0, device=logits.device)
+                for dataset_name in unique_datasets_name
+                # for dataset_name in _ACTION_DATASET_NAMES + _MULTIMODAL_DATASET_NAMES
+            } #  存储交叉熵损失
+            channel_loss_count_dict = {
+                dataset_name: torch.tensor(0, device=logits.device)
+                for dataset_name in unique_datasets_name
+                # for dataset_name in _ACTION_DATASET_NAMES + _MULTIMODAL_DATASET_NAMES
+            } # # 统计 action dataset 的有效 token 数量
+        else:
+            unique_datasets_name, channel_loss_dict, channel_loss_count_dict = (
+                None,
+                None,
+                None,
+            )
 
-        if labels is not None:
+        if labels is not None: # LM 监督（teacher forcing） 
             action_accuracy = 0
 
             shift_logits = logits[..., :-1, :].contiguous()
             shift_labels = labels[..., 1:].contiguous()
-            shift_logits = shift_logits.view(-1, self.config.vocab_size)
+            shift_logits = shift_logits.view(-1, self.config.vocab_size) #展平成二维 [B*(S-1), V] 和一维 [B*(S-1)]，方便喂给 CrossEntropyLoss
             shift_labels = shift_labels.view(-1)
             # Enable model parallelism
             shift_labels = shift_labels.to(shift_logits.device)
@@ -811,7 +813,7 @@ class ActionGenerationMixin(GenerationMixin):
                 _cross_entropy_loss[non_ignored_mask].mean()
                 if non_ignored_mask.any()
                 else torch.tensor(0.0, device=shift_logits.device)
-            )
+            ) # 如果存在至少一个非 ignore token，就取这些 token 的 mean；否则 CE=0。
 
             # compute channel loss
             _cross_entropy_loss = _cross_entropy_loss.view(batch_size, seq_length - 1)
@@ -835,8 +837,9 @@ class ActionGenerationMixin(GenerationMixin):
                 with torch.no_grad():
                     cross_entropy_loss.detach()
 
-            # compute action token accuracy
-            if len(self.action_token_id_set["action_token_list"]) > 0:
+            # compute action token accuracy 纯统计：不会进入 loss，所以不影响梯度。 动作 token 段对的比例; 似乎只有FAST开启才有意义
+            if len(self.action_token_id_set.get("action_token_list", [])) > 0:
+            # if len(self.action_token_id_set.get("action_token_list") > 0:
                 shift_logits = logits[..., :-1, :].contiguous()
                 action_preds = shift_logits.argmax(dim=-1)
                 shift_labels = labels[..., 1:].contiguous()
@@ -849,8 +852,8 @@ class ActionGenerationMixin(GenerationMixin):
                 )
                 channel_loss_dict["action_accuracy"] = action_accuracy
 
-        if action_chunk is not None:
-            action_mask = input_ids == self.action_token_id_set["action_token_id"]
+        if action_chunk is not None: # action 的 flow loss 不是一个“独立的 action-only 网络”在算损失，而是：用 VLM backbone 产生的 hidden states 作为条件，对连续动作做 flow / diffusion 监督。
+            action_mask = input_ids == self.action_token_id_set["action_token_id"] # <|action|> token 的 hidden state 是 VLM 和 action 世界的 接口 action query / action slo
             if action_mask.any():
                 action_hidden_states = hidden_states[action_mask].to(torch.float32)
                 flow = flow.reshape(-1, flow.shape[-1])

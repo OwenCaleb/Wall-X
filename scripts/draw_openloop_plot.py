@@ -23,14 +23,15 @@ def load_config(config_path):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--pred_horizon", type=int, default=32)
-    parser.add_argument("--origin_action_dim", type=int, default=20)
+    parser.add_argument("--origin_action_dim", type=int, default=19)
     args = parser.parse_args()
 
-    origin_action_dim = args.origin_action_dim
     pred_horizon = args.pred_horizon
+    origin_action_dim = args.origin_action_dim
+    
 
     # get train config
-    model_path = "/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/Pretrained_models/wall-oss-flow"
+    model_path = "/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/wallx/models/wallx/wall-oss-flow"
     # action_tokenizer_path = "/home/liwenbo/projects/VLA/wall-x/fast"
     save_dir = "/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/save_path_dir"
     path = "/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/workspace/lerobot_example/config_qact_custom.yml"
@@ -49,6 +50,7 @@ if __name__ == "__main__":
     model.set_normalizer(
         copy.deepcopy(normalizer_action), copy.deepcopy(normalizer_propri)
     )
+   
     model.eval()
     model = model.to("cuda")
     model.to_bfloat16_for_selected_params()

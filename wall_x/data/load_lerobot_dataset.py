@@ -130,7 +130,7 @@ class PreprocessedDataset(Dataset[T_co]):
                 dataset,
                 [0.95, 0.05],
                 torch.Generator().manual_seed(seed) if seed is not None else None,
-            )
+            ) # 再次分成 两部分；区别于之前 分出 0.95 0.05
             self._train()
 
         self.seed = seed
@@ -156,8 +156,8 @@ class PreprocessedDataset(Dataset[T_co]):
         )
 
         self._cam_key_mapping = KEY_MAPPINGS[self.hf_dataset.meta.repo_id]["camera"]
-        self._state_key_mapping = KEY_MAPPINGS[self.hf_dataset.meta.repo_id]
-        self._action_key_mapping = KEY_MAPPINGS[self.hf_dataset.meta.repo_id]
+        self._state_key_mapping = KEY_MAPPINGS[self.hf_dataset.meta.repo_id]["state"]
+        self._action_key_mapping = KEY_MAPPINGS[self.hf_dataset.meta.repo_id]["action"]
         self._subtask_id2name, self._high_level_id2text = _load_meta_mappings(self.lerobot_config.get('root', None))
 
 
@@ -166,11 +166,11 @@ class PreprocessedDataset(Dataset[T_co]):
         for key in self.hf_dataset.meta.camera_keys:
             from PIL import Image
 
-            current_obs = frames[key].clone().permute(1, 2, 0)
+            current_obs = frames[key].clone().permute(1, 2, 0) # CHW -> HWC，因为 PIL / numpy 图像常用 HWC。
 
-            img_pil = Image.fromarray((current_obs * 255).to(torch.uint8).cpu().numpy())
+            img_pil = Image.fromarray((current_obs * 255).to(torch.uint8).cpu().numpy()) # 把 [0,1] 映射到 [0,255]。
             orig_width, orig_height = img_pil.size
-            # 2. Apply resolution constraints (if config is not -1)
+            # 2. Apply resolution constraints (if config is not -1) 保持纵横比，并把“较长边”缩放到 target_size。
             target_size = self.data_config.resolution.get(
                 self._cam_key_mapping[key], -1
             )
@@ -184,7 +184,7 @@ class PreprocessedDataset(Dataset[T_co]):
                     new_width = int(target_size * orig_width / orig_height)
                 img_pil = img_pil.resize((new_width, new_height))
 
-            # 3. Apply smart scaling (qwen logic)
+            # 3. Apply smart scaling (qwen logic) 第二层 resize：不是你指定某个边长，而是按模型/实现的约束把尺寸调整到“合法尺寸”。
             current_width, current_height = img_pil.size
             resized_height, resized_width = smart_resize(
                 current_height,
@@ -201,8 +201,8 @@ class PreprocessedDataset(Dataset[T_co]):
     def __getitem__(self, index):
         data = self._dataset[index]
         image_inputs, h, w, resize_h, resize_w = self._vision_preprocess(data)
-        agent_pos = data[self._state_key_mapping["state"]]
-        action = data[self._action_key_mapping["action"]]
+        agent_pos = data[self._state_key_mapping]
+        action = data[self._action_key_mapping]
         frame_index = data["frame_index"]
         instruction_info = {"instruction": data["task"]}
         
@@ -214,12 +214,12 @@ class PreprocessedDataset(Dataset[T_co]):
                 instruction_info['subtask_generation'] = name
         
         # 新增标记 Optionally replace base instruction with high-level task text
-        if self._high_level_id2text is not None and self.dataload_config.get('use_tasks_high_level', False):
-            if 'task_index_high_level' in data:
-                hid = int(data['task_index_high_level'])
-                htxt = self._high_level_id2text.get(hid, '')
-                if htxt:
-                    instruction_info['instruction'] = htxt
+        if self._high_level_id2text is not None and "task_index_high_level" in data:
+            
+            hid = int(data['task_index_high_level'])
+            htxt = self._high_level_id2text.get(hid, '')
+            if htxt:
+                instruction_info['instruction'] = htxt
         
         generate_subtask_ratio = self.data_config.generate_subtask_ratio
 
@@ -235,10 +235,10 @@ class PreprocessedDataset(Dataset[T_co]):
             complete_text, h, w, resize_h, resize_w, self.data_config.model_type
         )
         result = {
-            "image_inputs": image_inputs,
+            "image_inputs": image_inputs, 
             "text": text,
-            "action": action,
-            "agent_pos": agent_pos,
+            "action": action, # [32,19]
+            "agent_pos": agent_pos, # [19]
             "frame_index": frame_index,
         }
 
@@ -360,7 +360,7 @@ class DataCollator:
         self.load_processor()
 
     def load_processor(self):
-        processor_path = self.config["pretrained_wallx_path"]
+        processor_path = self.config["pretrained_wallx_path"] # 区分processor 一个用于 collate，一个挂在 model 上用于处理输入与动作语义。
         action_tokenizer_path = self.config.get("action_tokenizer_path", None)
 
         if (
@@ -428,65 +428,70 @@ class DataCollator:
                 # print("agent_pos_mask",agent_pos_mask.shape)
                 agent_pos.nan_to_num_(nan=0.0)
 
-                # if agent_pos.shape[-1] != 20:
-                #     agent_pos = torch.cat(
-                #         [
-                #             agent_pos,
-                #             torch.zeros(
-                #                 agent_pos.shape[0],
-                #                 agent_pos.shape[1],
-                #                 20 - agent_pos.shape[-1],
-                #             ),
-                #         ],
-                #         dim=-1,
-                #     )
-                #     agent_pos_mask = torch.cat(
-                #         [
-                #             agent_pos_mask,
-                #             torch.zeros(
-                #                 agent_pos_mask.shape[0],
-                #                 agent_pos_mask.shape[1],
-                #                 20 - agent_pos_mask.shape[-1],
-                #             ),
-                #         ],
-                #         dim=-1,
-                #     )
                 agent_pos = self.normalizer_propri.normalize_data(
                     agent_pos, self.dataset_name
                 )
+                
+                if agent_pos.shape[-1] != 20:
+                    agent_pos = torch.cat(
+                        [
+                            agent_pos,
+                            torch.zeros(
+                                agent_pos.shape[0],
+                                agent_pos.shape[1],
+                                20 - agent_pos.shape[-1],
+                            ),
+                        ],
+                        dim=-1,
+                    )
+                    agent_pos_mask = torch.cat(
+                        [
+                            agent_pos_mask,
+                            torch.zeros(
+                                agent_pos_mask.shape[0],
+                                agent_pos_mask.shape[1],
+                                20 - agent_pos_mask.shape[-1],
+                            ),
+                        ],
+                        dim=-1,
+                    )
+
                 additional_inputs["proprioception"] = agent_pos
                 additional_inputs["agent_pos_mask"] = agent_pos_mask
             elif key == "action":
-                action = torch.stack([item["action"] for item in batch])
+                action = torch.stack([item["action"] for item in batch]) # [8,32,19]
                 if action.dim() == 2:
                     action = action.unsqueeze(1)
                 dof_mask = (~torch.isnan(action)).float()
                 action.nan_to_num_(nan=0.0)
-
-                # if action.shape[-1] != 20:
-                #     action = torch.cat(
-                #         [
-                #             action,
-                #             torch.zeros(
-                #                 action.shape[0], action.shape[1], 20 - action.shape[-1]
-                #             ),
-                #         ],
-                #         dim=-1,
-                #     )
-                #     dof_mask = torch.cat(
-                #         [
-                #             dof_mask,
-                #             torch.zeros(
-                #                 dof_mask.shape[0],
-                #                 dof_mask.shape[1],
-                #                 20 - dof_mask.shape[-1],
-                #             ),
-                #         ],
-                #         dim=-1,
-                #     )
+                
+                # 一旦补充到20维度，似乎意味着normalizer_action内容也必须有20维度 所以这部分应该要放到前面
                 action = self.normalizer_action.normalize_data(
                     action, self.dataset_name
                 )
+                
+                if action.shape[-1] != 20:
+                    action = torch.cat(
+                        [
+                            action,
+                            torch.zeros(
+                                action.shape[0], action.shape[1], 20 - action.shape[-1]
+                            ),
+                        ],
+                        dim=-1,
+                    )
+                    dof_mask = torch.cat(
+                        [
+                            dof_mask,
+                            torch.zeros(
+                                dof_mask.shape[0],
+                                dof_mask.shape[1],
+                                20 - dof_mask.shape[-1],
+                            ),
+                        ],
+                        dim=-1,
+                    ) # 1 表示该维度有效，0 表示无效。“新增维度”全部无效
+
                 additional_inputs["action_chunk"] = action
                 additional_inputs["dof_mask"] = dof_mask
             elif key == "image_inputs":
@@ -510,7 +515,7 @@ class DataCollator:
             self.train_action_tokenizer if self.use_fast_tokenizer else None,
             [self.lerobot_config["repo_id"]] * additional_inputs["text"].__len__(),
             additional_inputs["dof_mask"],
-        )
+        ) # 这里是结尾的一些删除之类 处理FAST的结尾
 
         inputs = preprocesser_call(
             processor=self.processor,
@@ -521,18 +526,18 @@ class DataCollator:
             truncation=True,
             return_tensors="pt",
             max_length=self.dataload_config.get("max_length", 1024),
-        )
+        ) # 把“一条或一批多模态对话样本（text + images/videos，占位符如 <|image_pad|> 等）”处理成模型可直接 model(**batch) 的输入张量，并生成只在 assistant 回复段计算交叉熵的 labels。在 labels 里把 <|action|>（以及 <|propri|>）全部 mask 掉，不参与 Loss ; 动作Loss全在flow
 
         action_token_id = self.processor.tokenizer.convert_tokens_to_ids("<|action|>")
 
-        # Gating token types
+        # Gating token types 哪些 token 位置是 “action token”（用于 MoE gating 或分支路由） 决定走哪个 expert
         additional_inputs["moe_token_types"] = inputs.input_ids == action_token_id
 
-        inputs.update(additional_inputs)
-
+        inputs.update(additional_inputs) 
+        
         inputs["dataset_names"] = [self.lerobot_config["repo_id"]] * inputs[
             "action_chunk"
-        ].shape[0]
+        ].shape[0] # ["g1custom", "g1custom", ..., "g1custom"]  # B 个
 
         return inputs
 
@@ -587,7 +592,7 @@ def load_lerobot_data(
         dataset_fps=dataset_fps,
         action_horizon=horizon,
         modality_json_path=modality_json_path,
-    )
+    ) # len = 2
 
     batch_size = config.get("batch_size_per_gpu", 8)
     episodes = np.arange(episodes_num).tolist()

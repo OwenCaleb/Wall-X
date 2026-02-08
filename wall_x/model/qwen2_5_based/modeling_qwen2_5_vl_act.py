@@ -787,7 +787,7 @@ class Qwen2_5_VLMoEForAction(
     @classmethod
     def _set_customized_config(cls, config):
         """
-        Processing norm_stats.json and reconstruct the DoF mapping
+        Processing norm_stats.json and reconstruct the DoF mapping 新版本似乎不再需要了？已经有结果直接导入了
         """
         dataload_config = config["data"]
         if not dataload_config.get("use_lerobot", False):
@@ -866,22 +866,22 @@ class Qwen2_5_VLMoEForAction(
         if train_config is not None:
             model_config = update_model_config(train_config, model_config)
             processors_dict = load_wallx_processors(train_config)
-            processor = processors_dict["processor"]
+            processor = processors_dict["processor"] # 取出主processor,即文本 tokenizer + 视觉预处理等
         else:
             processor = AutoProcessor.from_pretrained(
                 pretrained_model_path, use_fast=True
             )
 
         if not is_train:
-            model_config._attn_implementation = "sdpa"
+            model_config._attn_implementation = "sdpa" # 推理 attention：追求稳定、可控、可复现
 
         if action_tokenizer_path is not None:
             processor.action_processor = AutoProcessor.from_pretrained(
                 action_tokenizer_path, trust_remote_code=True
-            )
+            ) # 注意，processor在load_wallx_processors增加词汇让模型输出的“符号空间”：能不能输出 <|action_token_17|> 这种 token；而这里是动作的“数值语义”：连续动作 ↔ 离散 token index i 的映射规则，即编码解码动作；
 
         # Set the customized robot configuration to ensure consistency between cross-embodiment
-        # representations and the Wall-X action dimensionality.
+        # representations and the Wall-X action dimensionality. 当然如果 train_config 写了就不用管
         # if not train_config:
         #     cls._set_customized_config(train_config)
         #     customized_dof_config = train_config["customized_robot_config"][
@@ -904,14 +904,14 @@ class Qwen2_5_VLMoEForAction(
             os.path.join(pretrained_model_path, "*.safetensors")
         )
         state_dict = {}
-        embed_tokens_size = len(processor.tokenizer)
+        embed_tokens_size = len(processor.tokenizer) # 153715 暂时先不管了
         for file in safetensor_files:
             sd = load_file(file, device="cpu")
             # filter normalizer statistic params
             del_keys = []
             for key in sd.keys():
                 if "action_preprocessor.normalizer" in key:
-                    print(f"filter load model weight {key}")
+                    # print(f"filter load model weight {key}")
                     del_keys.append(key)
                 if "embed_tokens.weight" in key:
                     embed_tokens_size = sd[key].shape[0]
@@ -951,15 +951,15 @@ class Qwen2_5_VLMoEForAction(
         # Initialize vision transformer and language model components
         self.visual = Qwen2_5_VisionTransformerPretrainedModel._from_config(
             config.vision_config
-        )
+        ) # 构造 Qwen2.5-VL 的视觉编码器
         self.model = Qwen2_5_VLMoEModel(
             config, use_selective_recompute=use_selective_recompute
-        )
+        ) # 核心语言模型部分,并且是 MoE 版本
         self.vocab_size = config.vocab_size
-        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False) # 语言模型输出头
 
         # Initialize loss function without reduction for channel-wise loss computation
-        self.loss_fct = CrossEntropyLoss(reduction="none")
+        self.loss_fct = CrossEntropyLoss(reduction="none") #语言模型一定用 CrossEntropy ，分类问题
         self.flow_loss_weight = flow_loss_weight
         self.use_fast_tokenizer = use_fast_tokenizer
         self.processor = processor
@@ -971,7 +971,7 @@ class Qwen2_5_VLMoEForAction(
         # Cache for rope deltas
         self.rope_deltas = None
 
-        # Initialize action preprocessor
+        # Initialize action preprocessor # 注意区分 processor. 的action Processor 注意，在这里初始化了模型维度，导致载入参数不匹配
         self.action_preprocessor = ActionProcessor(config)
 
         # Apply LoRA if specified in configuration
@@ -992,6 +992,7 @@ class Qwen2_5_VLMoEForAction(
 
         Creates mappings for fast action tokens, proprioception tokens, and general action tokens.
         """
+        # ActionGenerationMixin也有一个实现
         # Create list of fast action token IDs
         fast_action_token_list = []
         if self.use_fast_tokenizer:
@@ -1013,6 +1014,7 @@ class Qwen2_5_VLMoEForAction(
             "propri_token_id": propri_token_id,
             "action_token_id": action_token_id,
         }
+        
 
     def add_lora(
         self, r=8, lora_alpha=32, target_modules=["q_proj", "v_proj"], lora_dropout=0.1

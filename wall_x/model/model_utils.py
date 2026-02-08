@@ -3,7 +3,8 @@ import os
 import numpy as np
 from transformers import AutoProcessor
 from wall_x.model.action_head import Normalizer
-
+from wall_x.utils.constant import action_statistic_dof as default_action_statistic_dof
+import json
 
 def update_model_config(train_config, model_config):
     model_config.use_state_string_representation = train_config["data"].get(
@@ -24,15 +25,15 @@ def update_model_config(train_config, model_config):
     return model_config
 
 
-def load_wallx_processors(config):
-    processor = AutoProcessor.from_pretrained(config["processor_path"], use_fast=True)
+def load_wallx_processors(config):#加载主多模态 processor，然后往它的 tokenizer 里注入“动作 token”，并建立 token_id 到动作编号的映射表，从而把“动作预测”变成“语言模型生成特殊 token”的问题。
+    processor = AutoProcessor.from_pretrained(config["processor_path"], use_fast=True) # 文本 tokenizer + 视觉预处理等
     # pad side = left
     processor.tokenizer.padding_side = "left"
 
     new_tokens = ["<|propri|>", "<|action|>"]
     # special_tokens = []
     action_tokenizer_type = config.get("action_tokenizer_type", None)
-    if action_tokenizer_type == "fast":
+    if action_tokenizer_type == "fast":# 使用原版FAST增加词汇
         train_action_tokenizer = AutoProcessor.from_pretrained(
             config["action_tokenizer_path"], trust_remote_code=True
         )
@@ -69,12 +70,18 @@ def load_wallx_processors(config):
 
 
 def register_normalizers(config, model_path):
+    if config.get("norm_stats_path", None):
+        print(
+            f"loading customized action statistic dof from {config['norm_stats_path']}"
+        )
+        action_statistic_dof = json.load(open(config["norm_stats_path"], "r"))
+        
     # if config.get("customized_action_statistic_dof", None):
     #     action_statistic_dof = json.load(open(config["customized_action_statistic_dof"], "r"))
     # else:
     #     action_statistic_dof = default_action_statistic_dof
 
-    action_statistic_dof = None
+    # action_statistic_dof = None
 
     if os.path.exists(model_path + "/normalizer_action.pth"):
         print(

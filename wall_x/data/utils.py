@@ -50,6 +50,7 @@ KEY_MAPPINGS = {
             "observation.images.right_hand_realsense_color": "right_wrist_view",
         },
         "state": "state",
+        "action": "action",
     },
     "libero": {
         "camera": {
@@ -399,7 +400,7 @@ def get_frame_instruction(
 
     instruction_for_frame = {}
     split_end = None
-
+    # 这里的 frame instruction 格式是 dict; 属于更细致的分类，将subtask组织起来的结构 如  "subtask": {"0 10": "reach","10 20": "grasp"}但是我并不是这样组织数据集的，因此关系不大
     for key, value in instruction_info.items():
         if isinstance(value, dict):
             # Handle frame-range specific instructions
@@ -519,20 +520,20 @@ def get_wallx_normal_text(
             user_request += f" {view_name}: {vision_start_symbol}{image_pad_symbol}{vision_end_symbol}"
     user_request += "\nInstruction:"
 
-    # Get frame-specific instruction
+    # Get frame-specific instruction 由于subtask数据集组织不同，这里并无作用
     frame_instruction_info, _ = get_frame_instruction(
         instruction_info, frame_idx=frame_idx
     )
 
     generate_subtask = False
-    priority_keys = ["subtask_generation", "distribute"]
+    priority_keys = ["subtask_generation", "distribute"] #在控制流层面是等价的 比如 "distribute": true
 
-    # Decide whether to generate subtask or actions
+    # Decide whether to generate subtask or actions 也许需要增加分支，一定概率走COT（对应的prompt不一样），同理也有一条分支走QA,但是由于QA数据的密度小，因此单独增加一个mode，instruction_info字典有'if_vqa'字段，1则全部走QA数据pieline,0则走其他pipeline;且对于多个QA随机抽取一个
     if (
         bool(set(frame_instruction_info.keys()) & set(priority_keys))
         and random.random() < generate_subtask_ratio
     ):
-        # Generate subtask (equivalent to VQA task)
+        # Generate subtask 
         instruction = frame_instruction_info.get("instruction", "")
         text_prompt = "\nPredict the next action in language.\n"
         user_message = f"{user_request} {instruction}{text_prompt}{role_end_symbol}\n"
@@ -542,20 +543,16 @@ def get_wallx_normal_text(
             if key in frame_instruction_info:
                 output_instruction = frame_instruction_info[key]
                 break
-        # 源代码似乎有问题，没有action的话后续预测 担心
-        # assistant_output = (
-        #     f"{role_start_symbol}assistant\n{output_instruction}\n{role_end_symbol}"
-        # )
+
         assistant_output = (
             f"{role_start_symbol}assistant\n{output_instruction}\n{role_end_symbol}\n"
-            f"{action_symbol * action_chunk_size}"
         )
         generate_subtask = True
     else:
         # Generate actions
         instruction = get_task_instruction(
             frame_instruction_info, priority_order=priority_order
-        )
+        ) # 似乎如果有subtask是subtask instruction
         text_prompt = f"\nPredict the next action in robot action.\nProprioception: {propri_symbol}\n"
         user_message = f"{user_request} {instruction}{text_prompt}{role_end_symbol}\n"
         assistant_output = f"{role_start_symbol}assistant\n{action_fast_symbol}{role_end_symbol}\n{action_symbol * action_chunk_size}"
@@ -653,7 +650,7 @@ def replace_action_token(
         actions_fast_tokens = get_action_tokens(norm_action, action_tokenizer)
         actions_fast_token_strs = pad_action_token_strs(actions_fast_tokens)
 
-        # Replace action placeholders with actual tokens
+        # Replace action placeholders with actual tokens <|action_fast|><|im_end|>\n-><|action_fast|><|im_end|>\n<|act_12|><|act_77|>...<|act_5|>\n
         actions_fast_token_idx = 0
         for i in range(len(text)):
             if "<|action_fast|>" in text[i]:
@@ -663,11 +660,11 @@ def replace_action_token(
                 )
                 actions_fast_token_idx += 1
 
-        # Remove remaining action placeholders
+        # Remove remaining action placeholders 删除所有<|action|>
         text = [t.replace("<|action|>", "") for t in text]
     else:
         # Remove action placeholders when no tokenizer available
-        text = [t.replace("<|action_fast|><|im_end|>\n", "") for t in text]
+        text = [t.replace("<|action_fast|><|im_end|>\n", "") for t in text] # 当没有 action_tokenizer（或 norm_action）时，这条样本不走“动作 token teacher forcing”这条训练路径，所以它只需要把“动作 fast token 串的入口”删掉，剩下的 <|action|> 交给后续流程处理（或保持占位作为结构信息）。
 
     return text
 

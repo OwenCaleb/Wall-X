@@ -10,7 +10,9 @@ from tqdm import tqdm
 import numpy as np
 
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
+from wall_x.data.load_lerobot_dataset import KEY_MAPPINGS
 
+import torch
 
 def write_json(path: Path, data: Dict) -> None:
     path.write_text(
@@ -107,23 +109,76 @@ def load_lerobot_dataset(
 
     print(f"Reading the following fields:{non_image_columns}")
     fast_dataset = dataset.hf_dataset.select_columns(non_image_columns)
+    
+    from pathlib import Path
+    from typing import Any, Dict, Union
+    def load_mapping_json(path: Union[str, Path]) -> Dict[str, Any]:
+        """MVP: read JSON file and return as dict."""
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    
+    # 1) 读 modality.json
+    base_dir = Path(base_dir)
+    modality_json = load_mapping_json(base_dir / "meta" / "modality.json")
 
-    for i in tqdm(range(len(fast_dataset))):
-        sample = fast_dataset[i]
-        action = sample["action"]  # torch.Tensor
-        propri = sample["observation.state"]
+    # 2) 找到 state/action 对应的 section（通常就是 "state"/"action"，但你用 KEY_MAPPINGS 做一层映射）
+    state_section_key = KEY_MAPPINGS[repo_id]["state"]
+    action_section_key = KEY_MAPPINGS[repo_id]["action"]
 
+    state_dict = modality_json[state_section_key]   # e.g. modality_json["state"]
+    action_dict = modality_json[action_section_key] # e.g. modality_json["action"]
+    
+    # 3) 收集所有要读的 columns（original_key 去重）
+    cols = set()
+    for spec in state_dict.values():
+        cols.add(spec["original_key"])
+    for spec in action_dict.values():
+        cols.add(spec["original_key"])
+    
+    cols = sorted(cols)
+    print(f"Reading columns ({len(cols)}): {cols}")
+
+    final_dataset = dataset.hf_dataset.select_columns(cols)
+    
+    for i in tqdm(range(len(final_dataset))):
+        sample = final_dataset[i]
+
+        # ---- 1) 拼 state 向量（按 modality.json 顺序）----
+        state_parts = []
+        for spec in state_dict.values():
+            x = sample[spec["original_key"]]
+            x = torch.as_tensor(x)
+            if "start" in spec and "end" in spec:
+                x = x[spec["start"]:spec["end"]]
+            state_parts.append(x.reshape(-1))
+        propri = torch.cat(state_parts, dim=0) if state_parts else torch.empty(0)
+
+        # ---- 2) 拼 action 向量（按 modality.json 顺序）----
+        action_parts = []
+        for spec in action_dict.values():
+            x = sample[spec["original_key"]]
+            x = torch.as_tensor(x)
+            if "start" in spec and "end" in spec:
+                x = x[spec["start"]:spec["end"]]
+            action_parts.append(x.reshape(-1))
+        action = torch.cat(action_parts, dim=0) if action_parts else torch.empty(0)
+
+        # ---- 3) 沿用原 trajectory_keys 逻辑 ----
         for key, action_keys in trajectory_keys.items():
             for action_key, action_range in action_keys.items():
-                if key == "action":
-                    frames[repo_id][action_key].append(
-                        action[action_range[0] : action_range[1]].numpy().tolist()
-                    )
+                if key == "action": 
+                    if "dummy" in action_key: # 匹配到20维度
+                        frames[repo_id][action_key].append([0.0] * int(action_range[1] - action_range[0]))
+                    else:
+                        frames[repo_id][action_key].append(
+                            action[action_range[0]:action_range[1]].cpu().numpy().tolist()
+                        )
                 else:
-                    frames[repo_id][action_key].append(
-                        propri[action_range[0] : action_range[1]].numpy().tolist()
-                    )
-
+                    if "dummy" in action_key: # 匹配到20维度
+                        frames[repo_id][action_key].append([0.0] * int(action_range[1] - action_range[0]))
+                    else:
+                        frames[repo_id][action_key].append(
+                            propri[action_range[0]:action_range[1]].cpu().numpy().tolist()
+                        )
     return frames
 
 
@@ -157,19 +212,19 @@ def compute_action_normalizer(
 
 def main() -> None:
 
-    repo_id = "xxx"  # your dataset name
-    data_root_path = "/path/to/lerobot/dataset"
-    output_stats_dir = "/path/to/save/action_stats"
+    repo_id = "g1custom"  # your dataset name
+    data_root_path = "/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/wallx/data/g1_new/lerobot/Teleop_251103_Sort_Anonymous_10Hz_refactorized"
+    output_stats_dir = "/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/norm_stats"
     trajectory_keys = {  # your dataset keys
         "action": {
-            "follow_right_ee_cartesian_pos": [0, 3],
-            "follow_right_ee_rotation": [3, 6],
-            "follow_right_gripper": [6, 7],
+            "observation.ts.actions_joint_robot_position": [0, 17],
+            "observation.ts.actions_joint_gripper_position": [17, 19],
+            # "dummy_action_joint": [19,20], # 匹配到20维度 不需要 已经硬编码
         },
         "propri": {
-            "master_right_ee_cartesian_pos": [0, 3],
-            "master_right_ee_rotation": [3, 6],
-            "master_right_gripper": [6, 7],
+            "observation.ts.observations_joint_robot_position": [0, 17],
+            "observation.ts.observations_joint_gripper_position": [17, 19],
+            # "dummy_state_joint": [19,20], # 匹配到20维度 不需要 已经硬编码
         },
     }
 
