@@ -1,35 +1,101 @@
 import time
-import torch
 from torch.cuda import nvtx
 from abc import ABC, abstractmethod
 from typing import List
 
+import torch
+from functools import wraps
+from contextlib import nullcontext
+import os
 
+ENABLE_PERFORMANCE_TIMING = (
+    os.environ.get("ENABLE_PERFORMANCE_TIMING", "True").lower() == "true"
+)
+
+ENABLE_CUDA_SYNC_IN_TIMER = (
+    os.environ.get("ENABLE_CUDA_SYNC_IN_TIMER", "False").lower() == "true"
+)
+
+
+class ScopeTimerContext:
+    def __init__(self, msg):
+        self.msg = msg
+
+    def __enter__(self):
+        if ENABLE_CUDA_SYNC_IN_TIMER and torch.cuda.is_available():
+            torch.cuda.synchronize()
+        self.start_time = time.perf_counter()
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        if ENABLE_CUDA_SYNC_IN_TIMER and torch.cuda.is_available():
+            torch.cuda.synchronize()
+        end_time = time.perf_counter()
+        cost_ms = (end_time - self.start_time) * 1e3
+        print(f"\033[92m{self.msg} took {cost_ms:.3f} ms to execute\033[0m")
+
+
+ScopeTimer = ScopeTimerContext if ENABLE_PERFORMANCE_TIMING else nullcontext
+
+
+def timer(func, msg=None):
+    """
+    Decorator to measure function execution time.
+
+    Args:
+        func: Function to be timed
+
+    Returns:
+        Wrapped function with timing functionality
+    """
+
+    if msg is None:
+        msg = func.__name__
+    else:
+        msg = f"{func.__name__:} {msg}"
+
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        with ScopeTimer(msg):
+            result = func(*args, **kwargs)
+
+        return result
+
+    return wrapper
+
+
+# Helper functions to check for distributed environment
 def _is_distributed():
+    """Checks if the current environment is set up for distributed training."""
     return torch.distributed.is_available() and torch.distributed.is_initialized()
 
 
 def _get_world_size():
+    """Safely retrieves the world size (number of processes)."""
     if _is_distributed():
         return torch.distributed.get_world_size()
     return 1
 
 
 def _get_rank():
+    """Safely retrieves the rank of the current process."""
     if _is_distributed():
         return torch.distributed.get_rank()
     return 0
 
 
 def _barrier(group=None):
+    """Safely executes a distributed barrier to synchronize processes."""
     if _is_distributed():
         torch.distributed.barrier(group=group)
 
 
+# Dynamically set the all_gather function
 if torch.distributed.is_available():
     try:
         dist_all_gather_func = torch.distributed.all_gather_into_tensor
     except AttributeError:
+        # Fallback to standard all_gather if all_gather_into_tensor is missing
         dist_all_gather_func = torch.distributed.all_gather
 else:
     dist_all_gather_func = None
@@ -144,7 +210,7 @@ class Timer(TimerBase):
         """
         self._barrier_group = barrier_group
 
-    def start(self, barrier=False, nvtx_push=False):
+    def start(self, barrier=False, nvtx_push=False, sync=False):
         """Start the timer.
 
         Args:
@@ -153,7 +219,7 @@ class Timer(TimerBase):
         assert not self._started, "timer has already been started"
         if barrier:
             _barrier(group=self._barrier_group)
-        if torch.cuda.is_available():
+        if torch.cuda.is_available() and sync:
             torch.cuda.synchronize()
         self._start_time = time.time()
         self._started = True
@@ -272,10 +338,13 @@ class Timers:
     def _get_elapsed_time_all_ranks(self, names, reset, barrier):
         """Returns elapsed times of timers in names.
 
+        For single-node/single-GPU cases, directly returns the time for the current rank.
+        For distributed cases, maintains the existing all_gather logic.
+
         Args:
             names (List[str]): list of timer names
             reset (bool): reset the timer after recording the elapsed time
-            barrier (bool): if set, do a global barrier before time measurments
+            barrier (bool): if set, do a global barrier before time measurements
 
         Returns:
             torch.tensor: Tensor of size [world_size, len(names)] with times in float.
@@ -288,6 +357,7 @@ class Timers:
         world_size = _get_world_size()
         rank = _get_rank()
 
+        # Create device tensor
         if torch.cuda.is_available():
             device = torch.cuda.current_device()
         else:
@@ -297,16 +367,19 @@ class Timers:
             (world_size, len(names)), dtype=torch.float, device=device
         )
 
+        # Fill timing data for the current rank
         for i, name in enumerate(names):
             if name in self._timers:
                 rank_name_to_time[rank, i] = self._timers[name].elapsed(reset=reset)
 
+        # Return directly for single-node; perform all_gather for distributed setup
         if world_size > 1 and _is_distributed() and dist_all_gather_func is not None:
             try:
                 dist_all_gather_func(
                     rank_name_to_time.view(-1), rank_name_to_time[rank, :].view(-1)
                 )
             except Exception as e:
+                # If all_gather fails, print a warning and proceed with single rank timing
                 print(f"Warning: all_gather failed: {e}. Using single rank timing.")
 
         return rank_name_to_time
@@ -340,13 +413,17 @@ class Timers:
 
         world_size = _get_world_size()
         if world_size == 1:
+            # Simplified output for single-node setup
             output_string = "time (ms):"
             for name in name_to_min_max_time:
-                _, max_time = name_to_min_max_time[name]
+                _, max_time = name_to_min_max_time[
+                    name
+                ]  # min and max are identical for a single rank
                 output_string += "\n    {}: {:.2f}".format(
                     (name + " ").ljust(48, "."), max_time
                 )
         else:
+            # Maintain original output format for multi-node setup
             if max_only:
                 output_string = "max time across ranks (ms):"
             else:

@@ -2,14 +2,22 @@ import torch
 from PIL import Image
 from transformers import AutoProcessor
 import yaml
+import os
 
 from wall_x.model.qwen2_5_based.modeling_qwen2_5_vl_act import Qwen2_5_VLMoEForAction
 
 
 class VQAWrapper(object):
-    def __init__(self, model_path: str, train_config: dict):
+    def __init__(self, model_path: str, train_config: dict = None):
+
         self.device = self._setup_device()
-        self.processor = self._load_processor(model_path)
+        if train_config is None:
+            try:
+                with open(os.path.join(model_path, "config.yml"), "r") as f:
+                    train_config = yaml.load(f, Loader=yaml.FullLoader)
+            except Exception as e:
+                print(f"load train_config.yml fail: {e}")
+        self.processor = self._load_processor(train_config["processor_path"])
         self.model = self._load_model(model_path, train_config)
 
     def _setup_device(self) -> str:

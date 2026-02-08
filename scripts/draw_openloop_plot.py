@@ -6,6 +6,8 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 from wall_x.model.qwen2_5_based.modeling_qwen2_5_vl_act import Qwen2_5_VLMoEForAction
 from wall_x.data.load_lerobot_dataset import load_test_dataset, get_data_configs
+from wall_x.model.model_utils import register_normalizers
+import copy
 
 
 def load_config(config_path):
@@ -34,6 +36,8 @@ if __name__ == "__main__":
     path = "/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/workspace/lerobot_example/config_qact_custom.yml"
     config = load_config(path)
 
+    normalizer_action, normalizer_propri = register_normalizers(config, model_path)
+    
     # load model with customized robot config
     # model = Qwen2_5_VLMoEForAction.from_pretrained(
     #     model_path, train_config=config, action_tokenizer_path=action_tokenizer_path
@@ -41,20 +45,27 @@ if __name__ == "__main__":
     model = Qwen2_5_VLMoEForAction.from_pretrained(
         model_path, train_config=config
     )
+
+    model.set_normalizer(
+        copy.deepcopy(normalizer_action), copy.deepcopy(normalizer_propri)
+    )
     model.eval()
     model = model.to("cuda")
-    model = model.bfloat16()
+    model.to_bfloat16_for_selected_params()
 
     # get test dataloader
     dataload_config = get_data_configs(config["data"])
     lerobot_config = dataload_config.get("lerobot_config", {})
-    dataset = load_test_dataset(config, lerobot_config, seed=42)
+    dataset = load_test_dataset(
+        config, lerobot_config, normalizer_action, normalizer_propri, seed=42
+    )
     dataloader = dataset.get_dataloader()
+    # dataloader = dataset.get_train_dataloader()
 
     total_frames = len(dataloader)
 
     predict_mode = "fast" if config.get("use_fast_tokenizer", False) else "diffusion"
-    action_dim = 20 if predict_mode == "diffusion" else origin_action_dim
+    action_dim = 14 if predict_mode == "diffusion" else origin_action_dim
     gt_traj = torch.zeros((total_frames, origin_action_dim))
     pred_traj = torch.zeros((total_frames, origin_action_dim))
 
@@ -68,7 +79,7 @@ if __name__ == "__main__":
                 outputs = model(
                     **batch,
                     action_dim=action_dim,
-                    pred_horizon=pred_horizon,
+                    action_horizon=pred_horizon,
                     mode="predict",
                     predict_mode=predict_mode,
                 )
