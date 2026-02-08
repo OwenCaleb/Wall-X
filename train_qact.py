@@ -37,7 +37,7 @@ def setup_accelerator(config):
         f"[{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}] Preparing accelerator"
     )
 
-    # 这一轮 forward/backward 里没被用到、没产生梯度的参数，也别报错，训练继续 稳妥兼容
+    # 这一轮 forward/backward 里没被用到、没产生梯度的参数，也别报错，训练继续 稳妥兼容 为True保证某些参数（MOE）不必一定梯度
     ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
     accelerator_dataloader_config = DataLoaderConfiguration(dispatch_batches=False)
 
@@ -87,16 +87,18 @@ def setup_logging(config, accelerator):
     """Set up logging with wandb for the main process."""
     if not accelerator.is_main_process:
         return None
-
+    from datetime import datetime
     # Create save directory if it doesn't exist
-    save_path = config["save_path"]
+    save_path=config["save_path"]
+    # save_path = os.path.join(config["save_path"], f'run_{datetime.now().strftime("%Y%m%d_%H%M%S")}')
+    # config["save_path"]=save_path
     if not os.path.exists(save_path):
         print(f"Save path {save_path} does not exist, creating directory.")
         os.makedirs(save_path, exist_ok=True)
 
     print("Configuration:")
     print("=" * 50)
-    print(json.dumps(config, indent=2, ensure_ascii=False))
+    print("Read Json .yml Config Over.")# print(json.dumps(config, indent=2, ensure_ascii=False))
     print("=" * 50)
 
     # Initialize wandb logger entity 默认 你本机 wandb login 的默认账号/团队

@@ -18,6 +18,7 @@ def print_rank_last(message):
         print(message, flush=True)
 
 
+<<<<<<< Updated upstream
 class Normalizer(nn.Module):
     @classmethod
     def from_ckpt(cls, ckpt_path):
@@ -43,6 +44,17 @@ class Normalizer(nn.Module):
                     print("name", name)
             except ValueError:
                 continue
+=======
+    def _pad_to_action_dim(self, xs, action_dim):
+        """
+        Pad the action data to the action dimension.无论原始数据是多少维，都填充或截断到20维
+        """
+        if xs.shape[-1] < action_dim:
+            padding_shape = list(xs.shape)
+            padding_shape[-1] = action_dim - padding_shape[-1]
+            xs = torch.cat([xs, torch.zeros(padding_shape).to(xs.device)], dim=-1)
+        return xs
+>>>>>>> Stashed changes
 
         return instance
 
@@ -59,6 +71,11 @@ class Normalizer(nn.Module):
             action_statistic[robot_name] = {}
             all_dof_min = []
             all_dof_delta = []
+<<<<<<< Updated upstream
+=======
+
+            # Collect min and delta values for all DOFs 又是一个重要疑问；似乎把多个数据集数据混合
+>>>>>>> Stashed changes
             for k in dof_config:
                 if k in action_statistic_dof[robot_name]:
                     if (
@@ -80,10 +97,18 @@ class Normalizer(nn.Module):
                         all_dof_min.extend([0.0] * dof_config[k])
                         all_dof_delta.extend([1.0] * dof_config[k])
                 else:
+<<<<<<< Updated upstream
                     if robot_name == "x2_normal" or "libero" in robot_name:
                         print_rank_last(
                             f"Normalizer (Warning): Action {k} not in action_statistic_dof for {robot_name}, use default min 0.0 and delta 1.0"
                         )
+=======
+                    # Use default values if statistics not available
+                    # raise ValueError(f"Statistics not available for {k} of {robot_name}")
+                    # logging.warning(
+                    #     f"Statistics not available for {k} of {robot_name}, using default values"
+                    # )
+>>>>>>> Stashed changes
                     all_dof_min.extend([0.0] * dof_config[k])
                     all_dof_delta.extend([1.0] * dof_config[k])
             all_dof_min = torch.tensor(all_dof_min)
@@ -91,6 +116,17 @@ class Normalizer(nn.Module):
             action_statistic[robot_name][min_key] = all_dof_min
             action_statistic[robot_name][delta_key] = all_dof_delta
 
+<<<<<<< Updated upstream
+=======
+            all_dof_min = self._pad_to_action_dim(torch.tensor(all_dof_min), action_dim)
+            all_dof_delta = self._pad_to_action_dim(
+                torch.tensor(all_dof_delta), action_dim
+            )
+            action_statistic[robot_name]["min"] = all_dof_min
+            action_statistic[robot_name]["delta"] = all_dof_delta
+
+        # Register statistics as non-trainable parameters    将普通 Tensor 包装成模型参数 requires_grad=False 表示不计算梯度，不参与训练
+>>>>>>> Stashed changes
         self.min = nn.ParameterDict(
             {
                 k: nn.Parameter(action_statistic[k][min_key], requires_grad=False)
@@ -174,8 +210,16 @@ class Upsample1d(nn.Module):
         super().__init__()
         self.conv = nn.ConvTranspose1d(dim, dim, 4, 2, 1)
 
+<<<<<<< Updated upstream
     def forward(self, x):
         return self.conv(x)
+=======
+        # Calculate action and proprioception dimensions from configuration 有bug疑问：似乎这里加载的是config配置里的dof 不过正好是20巧了 似乎是用来默认模型的输入接口的；真正输入的时候补全到20
+        self.dof_config = config.dof_config
+        self.agent_pos_config = config.agent_pos_config
+        self.action_dim = sum([v for k, v in self.dof_config.items()])
+        self.propri_dim = sum([v for k, v in self.agent_pos_config.items()])
+>>>>>>> Stashed changes
 
 
 class Conv1dBlock(nn.Module):

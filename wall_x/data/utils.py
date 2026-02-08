@@ -542,9 +542,13 @@ def get_wallx_normal_text(
             if key in frame_instruction_info:
                 output_instruction = frame_instruction_info[key]
                 break
-
+        # 源代码似乎有问题，没有action的话后续预测 担心
+        # assistant_output = (
+        #     f"{role_start_symbol}assistant\n{output_instruction}\n{role_end_symbol}"
+        # )
         assistant_output = (
-            f"{role_start_symbol}assistant\n{output_instruction}\n{role_end_symbol}"
+            f"{role_start_symbol}assistant\n{output_instruction}\n{role_end_symbol}\n"
+            f"{action_symbol * action_chunk_size}"
         )
         generate_subtask = True
     else:

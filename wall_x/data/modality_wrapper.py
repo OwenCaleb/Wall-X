@@ -23,7 +23,7 @@ import torch
 
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
-
+from .utils import load_norm_stats, KEY_MAPPINGS
 class ModalityAwareLeRobotDataset(LeRobotDataset):
     """
     A LeRobotDataset that injects unified keys:
@@ -40,25 +40,29 @@ class ModalityAwareLeRobotDataset(LeRobotDataset):
 
     def __init__(
         self,
-        *args,
-        modality_json: str | Path,
-        action_horizon: int,
-        state_key: str = "state",
-        action_key: str = "action",
+        repo_id: str,
+        root: str | Path | None = None,
+        episodes: list[int] | None = None,
+        delta_timestamps: dict[list[float]] | None = None,
+        video_backend: str | None = None,
+        modality_json: str | Path = None,
+        # action_horizon: int,
+        # state_key: str = "state",
+        # action_key: str = "action",
         **kwargs,
     ):
-        super().__init__(*args, **kwargs)
+        super().__init__(repo_id,root,episodes,delta_timestamps=delta_timestamps,video_backend=video_backend, **kwargs)
 
         self.modality_path = Path(modality_json)
-        self.action_horizon = int(action_horizon)
-        self.state_key = state_key
-        self.action_key = action_key
+        self.action_horizon = len(delta_timestamps[next(iter(delta_timestamps))])
 
         with open(self.modality_path, "r") as f:
             self.modality = json.load(f)
 
-        self.state_specs = self._parse_vector_specs(self.modality.get("state", {}))
-        self.action_specs = self._parse_vector_specs(self.modality.get("action", {}))
+        self.state_key=KEY_MAPPINGS[repo_id]["state"]
+        self.action_key=KEY_MAPPINGS[repo_id]["action"]
+        self.state_specs = self._parse_vector_specs(self.modality.get(KEY_MAPPINGS[repo_id]["state"], {}))
+        self.action_specs = self._parse_vector_specs(self.modality.get(KEY_MAPPINGS[repo_id]["action"], {}))
 
     @staticmethod
     def _parse_vector_specs(block: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -117,7 +121,7 @@ class ModalityAwareLeRobotDataset(LeRobotDataset):
         for sp in self.action_specs:
             orig = sp["original_key"]
 
-            if orig in item and isinstance(item[orig], torch.Tensor) and item[orig].ndim >= 2:
+            if orig in item and isinstance(item[orig], torch.Tensor) and item[orig].ndim == 2 and item[orig].shape[0] == H:
                 # Usually [H, D] when delta_timestamps includes this key
                 x = item[orig]
             else:

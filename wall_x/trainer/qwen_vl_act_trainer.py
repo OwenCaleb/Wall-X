@@ -192,7 +192,7 @@ class QwenVlAct_Trainer:
         print(
             f"rank {self.accelerator.process_index} after load model memory usage: {torch.cuda.memory_allocated() / 1024 ** 3:.2f} GB",
             flush=True,
-        )
+        )# Debug : rank 0 after load model memory usage: 7.98 GB
 
         # Load training data
         self.load_qact_data()
@@ -601,8 +601,13 @@ class QwenVlAct_Trainer:
             self.processor = model.processor
             model = model.to(torch.bfloat16)
         elif model_type == "qwen2_5":
+<<<<<<< Updated upstream
 
             model_config = Qwen2_5_VLConfig.from_pretrained(
+=======
+            # 使用原本路径‘pretrained_wallx_path’（本应该是qwen吧）下的processor，然后把真实fast处理好的tokenizer复制到原始tokenizer
+            config = Qwen2_5_VLConfig.from_pretrained(
+>>>>>>> Stashed changes
                 self.config["qwen_vl_act_config_path"]
             )
             flow_loss_weight = self.config.get("flow_loss_weight", 1.0)
@@ -664,8 +669,7 @@ class QwenVlAct_Trainer:
             model = model.to(torch.bfloat16)
         else:
             raise NotImplementedError(f"Invalid model type: {model_type}")
-
-        # Configure optimizer based on training strategy
+        # Configure optimizer based on training strategy 配置只训练特定部分
         if "freeze_vlm" in self.config and self.config["freeze_vlm"]:
             print("Freezing VLM parameters, training only MoE experts", flush=True)
             moe_params = []
@@ -678,7 +682,7 @@ class QwenVlAct_Trainer:
             self.optimizer = AdamW(param_groups, weight_decay=0.1)
 
         elif "action_expert_learning_rate" in self.config:
-            # Separate learning rates for VLM and action expert parameters
+            # Separate learning rates for VLM and action expert（单独的MOE，但是把这个叫做action expert...） parameters
             moe_params = []
             vlm_params = []
             for name, param in model.named_parameters():
@@ -757,7 +761,7 @@ class QwenVlAct_Trainer:
         Supports LeRobot dataset format and handles distributed data loading
         across multiple processes.
         """
-        print(f"Loading Vision-Language-Action data from {__file__}")
+        # print(f"Loading Vision-Language-Action data from {__file__}")
         self.accelerator.wait_for_everyone()
 
         # Load LeRobot dataset

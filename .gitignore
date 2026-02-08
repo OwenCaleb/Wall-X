@@ -275,4 +275,12 @@ fast/
 lerobot/
 3rdparty/
 Datasets/
+output_models/
 
+.github/
+csrc/
+deployment/
+fast_new_qwen3/
+fast_new_qwen25/
+
+wallx/

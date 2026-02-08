@@ -79,6 +79,9 @@ class X2RDataProcessingConfig:
         }
     )
 
+    # 新增控制
+    use_tasks_high_level = False
+
     # Dataset splitting
     train_test_split: float = 0.9
     split_seed: int = 42
@@ -86,13 +89,15 @@ class X2RDataProcessingConfig:
     # Instruction handling
     priority_order: Optional[Dict[str, float]] = None
 
+
     # Vision model parameters
     model_type: str = "qwen2_5"
     max_pixels: int = MAX_PIXELS
     min_pixels: int = MIN_PIXELS
     image_factor: int = IMAGE_FACTOR
 
-    generate_subtask_ratio: float = 0.0
+    # generate_subtask_ratio: float = 0.0
+    generate_subtask_ratio: float = 0.3
 
     def __post_init__(self):
         """Post-initialization validation and setup."""

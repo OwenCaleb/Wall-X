@@ -27,6 +27,53 @@ T_co = TypeVar("T_co", covariant=True)
 import json
 from pathlib import Path
 
+
+## ---- subtask / high-level task helpers ----
+def _load_subtask_id2name(dataset_root: str):
+    """subtasks.parquet in your case: index is subtask string, column is subtask_index."""
+    try:
+        import pandas as pd
+        root = Path(dataset_root) if dataset_root is not None else None
+        if root is None:
+            return None
+        p = root / "meta" / "subtasks.parquet"
+        if not p.exists():
+            return None
+        df = pd.read_parquet(p)
+        if "subtask_index" not in df.columns:
+            return None
+        # label is stored in index named 'subtask'
+        return {int(v): str(k) for k, v in df["subtask_index"].items()}
+    except Exception:
+        return None
+
+def _load_high_level_id2text(dataset_root: str, prefer_col: str = "user_prompt"):
+    """tasks_high_level.parquet: key is task_index; text can come from a column (default user_prompt) or index."""
+    try:
+        import pandas as pd
+        root = Path(dataset_root) if dataset_root is not None else None
+        if root is None:
+            return None
+        p = root / "meta" / "tasks_high_level.parquet"
+        if not p.exists():
+            return None
+        df = pd.read_parquet(p)
+        if "task_index" not in df.columns:
+            return None
+        if prefer_col in df.columns:
+            return dict(zip(df["task_index"].astype(int).tolist(), df[prefer_col].astype(str).tolist()))
+        # fallback: use index string (in your file it's the 'task' index)
+        return dict(zip(df["task_index"].astype(int).tolist(), df.index.astype(str).tolist()))
+    except Exception:
+        return None
+
+def _load_meta_mappings(dataset_root: str):
+    """Load subtask and high-level mappings from <root>/meta."""
+    subtask_id2name = _load_subtask_id2name(dataset_root)
+    high_level_id2text = _load_high_level_id2text(dataset_root, prefer_col="user_prompt")
+    return subtask_id2name, high_level_id2text
+# ------------------------------------------
+
 def _resolve_modality_json_path(lerobot_config):
     # 兼容不同命名：modality_json / modality_path
     return lerobot_config.get("modality_json", None) or lerobot_config.get("modality_path", None)
@@ -39,7 +86,7 @@ def _build_delta_timestamps(repo_id, dataset_fps, action_horizon, modality_json_
     # 1) 有 modality.json：用 original_key 列表生成 delta_timestamps
     if modality_json_path is not None and len(str(modality_json_path)) > 0:
         modality = json.loads(Path(modality_json_path).read_text())
-        action_orig_keys = [cfg["original_key"] for cfg in modality["action"].values()]
+        action_orig_keys = [cfg["original_key"] for cfg in modality[KEY_MAPPINGS[repo_id]["action"]].values()]
         return {k: [t / dataset_fps for t in range(action_horizon)] for k in action_orig_keys}
 
     # 2) 没有 modality.json：保持旧行为
@@ -111,6 +158,8 @@ class PreprocessedDataset(Dataset[T_co]):
         self._cam_key_mapping = KEY_MAPPINGS[self.hf_dataset.meta.repo_id]["camera"]
         self._state_key_mapping = KEY_MAPPINGS[self.hf_dataset.meta.repo_id]
         self._action_key_mapping = KEY_MAPPINGS[self.hf_dataset.meta.repo_id]
+        self._subtask_id2name, self._high_level_id2text = _load_meta_mappings(self.lerobot_config.get('root', None))
+
 
     def _vision_preprocess(self, frames):
         processed_frames = []
@@ -156,6 +205,22 @@ class PreprocessedDataset(Dataset[T_co]):
         action = data[self._action_key_mapping["action"]]
         frame_index = data["frame_index"]
         instruction_info = {"instruction": data["task"]}
+        
+        # 新增标记 If available, attach subtask label for auxiliary subtask-generation training
+        if self._subtask_id2name is not None and 'subtask_index' in data:
+            sid = int(data['subtask_index'])
+            name = self._subtask_id2name.get(sid, '')
+            if name:
+                instruction_info['subtask_generation'] = name
+        
+        # 新增标记 Optionally replace base instruction with high-level task text
+        if self._high_level_id2text is not None and self.dataload_config.get('use_tasks_high_level', False):
+            if 'task_index_high_level' in data:
+                hid = int(data['task_index_high_level'])
+                htxt = self._high_level_id2text.get(hid, '')
+                if htxt:
+                    instruction_info['instruction'] = htxt
+        
         generate_subtask_ratio = self.data_config.generate_subtask_ratio
 
         complete_text, generate_subtask = get_wallx_normal_text(
@@ -455,7 +520,7 @@ class DataCollator:
             padding=True,
             truncation=True,
             return_tensors="pt",
-            max_length=self.dataload_config.get("max_length", 768),
+            max_length=self.dataload_config.get("max_length", 1024),
         )
 
         action_token_id = self.processor.tokenizer.convert_tokens_to_ids("<|action|>")
@@ -541,9 +606,9 @@ def load_lerobot_data(
             delta_timestamps=delta_timestamps,
             video_backend="pyav",
             modality_json=modality_json_path,
-            action_horizon=horizon,
-            state_key=KEY_MAPPINGS[repo_id]["state"],   # "state"
-            action_key=KEY_MAPPINGS[repo_id]["action"], # "action"
+            # action_horizon=horizon
+            # state_key=KEY_MAPPINGS[repo_id]["state"],   # "state"
+            # action_key=KEY_MAPPINGS[repo_id]["action"], # "action"
         )
     else:
         train_dataset = LeRobotDataset(
@@ -746,9 +811,9 @@ def load_test_dataset(
             delta_timestamps=delta_timestamps,
             video_backend="pyav",
             modality_json=modality_json_path,
-            action_horizon=horizon,
-            state_key=KEY_MAPPINGS[repo_id]["state"],   # "state"
-            action_key=KEY_MAPPINGS[repo_id]["action"], # "action"
+            # action_horizon=horizon,
+            # state_key=KEY_MAPPINGS[repo_id]["state"],   # "state"
+            # action_key=KEY_MAPPINGS[repo_id]["action"], # "action"
         )
     else:
         dataset = LeRobotDataset(

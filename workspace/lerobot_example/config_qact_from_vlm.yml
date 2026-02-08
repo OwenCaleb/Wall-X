@@ -8,8 +8,8 @@ model_type: qwen2_5
 pretrained_wallx_path: "/home/liwenbo/.cache/huggingface/hub/models--X-Square-Robot--wall-oss-flow/snapshots/a4003288001825b10771cbc4b10b9c2315e9b862"  # Must set
 save_path: "/home/liwenbo/projects/VLA/wall-x/save_path_dir"                # Must set
 use_fast_tokenizer: False                       # True: train FAST, False: train Flow
-action_tokenizer_path: "/home/liwenbo/projects/VLA/wall-x/fast"         # Must set if use_fast_tokenizer is true
-qwen_vl_act_config_path: "wall-x/workspace/lerobot_example/qwen25_config.json"
+action_tokenizer_path: "/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/fast"         # Must set if use_fast_tokenizer is true
+qwen_vl_act_config_path: "/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/workspace/lerobot_example/qwen25_config.json"
 
 
 # Torch Profile

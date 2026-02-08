@@ -16,7 +16,7 @@ MASTER_PORT=10239 # use 5 digits ports
 export LAUNCHER="accelerate launch --num_processes=$NUM_GPUS --main_process_port=$PORT"
 
 export SCRIPT="${code_dir}/train_qact.py"
-export SCRIPT_ARGS="--config ${config_path}/config_qact_custom.yml --seed $MASTER_PORT"
+export SCRIPT_ARGS="--config ${config_path}/config_qact_from_vlm_custom.yml --seed $MASTER_PORT"
 
 echo "Running command: $LAUNCHER $SCRIPT $SCRIPT_ARGS"
 

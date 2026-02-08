@@ -5,9 +5,9 @@ log_name: "robotic_training"
 log_project: "vla_training"
 model_type: wall-oss
 pretrained_wallx_path: "/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/Pretrained_models/wall-oss-flow"  # Must set
-save_path: "/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/output_models"                # Must set
+save_path: "/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/output_models/2621_flow"                # Must set
 use_fast_tokenizer: False                       # True: train FAST, False: train Flow
-action_tokenizer_path: "/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/Pretrained_models/wall-oss-flow"         # Must set if use_fast_tokenizer is true
+action_tokenizer_path: "/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/fast"         # Must set if use_fast_tokenizer is true
 
 # Torch Profile
 profile: False
@@ -21,7 +21,7 @@ num_warmup_steps: 100
 num_training_steps: 64000000
 learning_rate: 0.00005
 min_lr: 0.00005
-num_epoch: 20
+num_epoch: 10
 gradient_accumulation_steps: 32
 # batch_size_per_gpu: 
 batch_size_per_gpu: 8
@@ -64,7 +64,7 @@ data:
   # LeRobot dataset configuration
   lerobot_config:
     repo_id: "g1custom"
-    root: /mnt/nas_ssd/data/wallx/data/g1/lerobot/Teleop_251103_sort_Anonymous_10Hz
+    root: /mnt/nas_ssd/data/wallx/data/g1/lerobot/Teleop_251103_sort_Anonymous_10Hz_subtask_v2
     episodes: null
     image_transforms: null
     delta_timestamps: null
@@ -73,7 +73,7 @@ data:
     force_cache_sync: false
     download_videos: false
     video_backend: pyav
-    modality_json: "/mnt/nas_ssd/data/wallx/data/g1/lerobot/Teleop_251103_sort_Anonymous_10Hz/meta/modality.json"
+    modality_json: "/mnt/nas_ssd/data/wallx/data/g1/lerobot/Teleop_251103_sort_Anonymous_10Hz_subtask_v2/meta/modality.json"
 
   action_horizon: 32
   train_test_split: 0.95
