@@ -84,6 +84,7 @@ data:
     video_backend: pyav
     modality_json: "/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/wallx/data/g1_new/lerobot/Teleop_251103_Sort_Anonymous_10Hz_refactorized/meta/modality.json"
 
+    
 
   action_horizon: 32
   train_test_split: 0.95

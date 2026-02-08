@@ -96,8 +96,8 @@ class X2RDataProcessingConfig:
     min_pixels: int = MIN_PIXELS
     image_factor: int = IMAGE_FACTOR
 
-    # generate_subtask_ratio: float = 0.0
-    generate_subtask_ratio: float = 0.3
+    generate_subtask_ratio: float = 0.0
+    # generate_subtask_ratio: float = 0.3
 
     def __post_init__(self):
         """Post-initialization validation and setup."""

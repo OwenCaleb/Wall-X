@@ -849,7 +849,7 @@ class ActionGenerationMixin(GenerationMixin):
                 correct_preds = (action_preds == shift_labels) & action_mask
                 action_accuracy = (
                     correct_preds.sum().float() / action_mask.sum().float()
-                )
+                ) # 因为你的 batch 很可能走了 subtask/COT/QA 分支，或者 labels 的 action token 全被 mask 掉了（-100），导致 action_mask 全 False。
                 channel_loss_dict["action_accuracy"] = action_accuracy
 
         if action_chunk is not None: # action 的 flow loss 不是一个“独立的 action-only 网络”在算损失，而是：用 VLM backbone 产生的 hidden states 作为条件，对连续动作做 flow / diffusion 监督。
