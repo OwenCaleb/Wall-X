@@ -855,6 +855,18 @@ class ActionGenerationMixin(GenerationMixin):
         if action_chunk is not None: # action 的 flow loss 不是一个“独立的 action-only 网络”在算损失，而是：用 VLM backbone 产生的 hidden states 作为条件，对连续动作做 flow / diffusion 监督。
             action_mask = input_ids == self.action_token_id_set["action_token_id"] # <|action|> token 的 hidden state 是 VLM 和 action 世界的 接口 action query / action slo
             if action_mask.any():
+                has_action = action_mask.any(dim=1)
+                # Filter flow-side tensors when a batch mixes subtask and action samples. 当多种模式存在时候，需要在Flow处理时只保留含有动作 token 的样本
+                if not has_action.all():
+                    flow = flow.view(has_action.shape[0], -1, flow.shape[-1])
+                    flow = flow[has_action] # 只保留有action分支的样本
+                    if dof_mask is not None:
+                        dof_mask = dof_mask[has_action]
+                    if action_chunk is not None:
+                        action_chunk = action_chunk[has_action]
+                    if flow_loss_mask is not None:
+                        flow_loss_mask = flow_loss_mask[has_action]
+
                 action_hidden_states = hidden_states[action_mask].to(torch.float32)
                 flow = flow.reshape(-1, flow.shape[-1])
                 _flow_loss = self.action_preprocessor.flow_loss(
