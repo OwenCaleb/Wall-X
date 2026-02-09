@@ -528,7 +528,7 @@ def get_wallx_normal_text(
     generate_subtask = False
     priority_keys = ["subtask_generation", "distribute"] #在控制流层面是等价的 比如 "distribute": true
 
-    # Decide whether to generate subtask or actions 也许需要增加分支，一定概率走COT（对应的prompt不一样），同理也有一条分支走QA,但是由于QA数据的密度小，因此单独增加一个mode，instruction_info字典有'if_vqa'字段，1则全部走QA数据pieline,0则走其他pipeline;且对于多个QA随机抽取一个
+    # Decide whether to generate subtask or actions 也许需要增加分支，一定概率走COT（对应的prompt不一样），同理也有一条分支走QA,但是由于QA数据的密度小，因此单独增加一个mode，也采用X2RDataProcessingConfig里增加'if_vqa'字段，然后作为参数传进来；1则全部走QA数据pieline,0则走其他pipeline;且对于多个QA随机抽取一个
     if (
         bool(set(frame_instruction_info.keys()) & set(priority_keys))
         and random.random() < generate_subtask_ratio

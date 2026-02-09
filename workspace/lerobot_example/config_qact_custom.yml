@@ -25,7 +25,7 @@ num_training_steps: 64000000
 learning_rate: 0.00005
 min_lr: 0.00005
 num_epoch: 10
-gradient_accumulation_steps: 32
+gradient_accumulation_steps: 16
 # batch_size_per_gpu: 
 batch_size_per_gpu: 8
 padding_side: left
