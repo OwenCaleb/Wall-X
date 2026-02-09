@@ -8,6 +8,7 @@ import random
 from torch.utils.data import (
     ConcatDataset,
     DistributedSampler,
+    Sampler,
     WeightedRandomSampler,
     random_split,
 )
@@ -188,6 +189,41 @@ class _IndexDatasetWrapper:
 
     def __getattr__(self, name):
         return getattr(self.dataset, name)
+
+
+class _DistributedWeightedSampler(Sampler[int]):
+    # Label【QAdataset】【distributed weighted sampler for VQA mix】
+    def __init__(
+        self,
+        weights,
+        num_samples,
+        num_replicas,
+        rank,
+        seed=0,
+    ):
+        self.weights = torch.as_tensor(weights, dtype=torch.double)
+        self.num_samples = int(num_samples)
+        self.num_replicas = int(num_replicas)
+        self.rank = int(rank)
+        self.seed = int(seed)
+        self.epoch = 0
+
+    def set_epoch(self, epoch):
+        self.epoch = int(epoch)
+
+    def __iter__(self):
+        g = torch.Generator()
+        g.manual_seed(self.seed + self.epoch + self.rank)
+        indices = torch.multinomial(
+            self.weights,
+            self.num_samples,
+            replacement=True,
+            generator=g,
+        )
+        return iter(indices.tolist())
+
+    def __len__(self):
+        return self.num_samples
 
 
 class PreprocessedDataset(Dataset[T_co]):
@@ -421,7 +457,6 @@ class PreprocessedDataset(Dataset[T_co]):
         if (
             vqa_dataset is not None
             and vqa_weights is not None
-            and self.world_size == 1
         ):
             main_len = len(self)
             vqa_len = len(vqa_dataset)
@@ -431,11 +466,21 @@ class PreprocessedDataset(Dataset[T_co]):
                 main_weight = weight_main / float(main_len)
                 vqa_weight = weight_vqa / float(vqa_len)
                 weights = [main_weight] * main_len + [vqa_weight] * vqa_len
-                sampler = WeightedRandomSampler(
-                    weights=weights,
-                    num_samples=main_len,
-                    replacement=True,
-                )
+                if self.world_size == 1:
+                    sampler = WeightedRandomSampler(
+                        weights=weights,
+                        num_samples=main_len,
+                        replacement=True,
+                    )
+                else:
+                    samples_per_rank = (main_len // self.world_size)
+                    sampler = _DistributedWeightedSampler(
+                        weights=weights,
+                        num_samples=samples_per_rank,
+                        num_replicas=self.world_size,
+                        rank=self.rank,
+                        seed=self.seed,
+                    )
                 dataloader = torch.utils.data.DataLoader(
                     mix_dataset,
                     batch_size=batch_size,
@@ -453,7 +498,7 @@ class PreprocessedDataset(Dataset[T_co]):
                     prefetch_factor=2,
                     drop_last=True,
                 )
-                return dataloader, None
+                return dataloader, sampler
 
         # Create distributed sampler
         sampler = DistributedSampler(
