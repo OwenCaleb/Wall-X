@@ -70,6 +70,10 @@ customized_robot_config:
 # Data configuration
 data:
   use_lerobot: true
+  vqa_types: ["spatial"]
+  generate_vqa_ratio: 1   # 有就一定走
+  generate_cot_ratio: 0.3
+  generate_subtask_ratio: 0.3
 
   # LeRobot dataset configuration
   lerobot_config:

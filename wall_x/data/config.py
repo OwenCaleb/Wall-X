@@ -97,6 +97,9 @@ class X2RDataProcessingConfig:
     image_factor: int = IMAGE_FACTOR
 
     generate_subtask_ratio: float = 0.5
+    generate_vqa_ratio: float = 0.0
+    generate_cot_ratio: float = 0.0
+    vqa_types: Optional[List[str]] = None
     # generate_subtask_ratio: float = 0.3
 
     def __post_init__(self):

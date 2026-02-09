@@ -4,6 +4,7 @@ LeRobot Dataset Loader - Distributed Version
 
 import numpy as np
 import torch
+import random
 from torch.utils.data import DistributedSampler, random_split
 from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
 from typing import Protocol, SupportsIndex, TypeVar
@@ -64,6 +65,68 @@ def _load_high_level_id2text(dataset_root: str, prefer_col: str = "user_prompt")
             return dict(zip(df["task_index"].astype(int).tolist(), df[prefer_col].astype(str).tolist()))
         # fallback: use index string (in your file it's the 'task' index)
         return dict(zip(df["task_index"].astype(int).tolist(), df.index.astype(str).tolist()))
+    except Exception:
+        return None
+
+def _load_high_level_cot_map(dataset_root: str):
+    """tasks_high_level.parquet: map task_index -> cot fields (question/answer/instruction)."""
+    try:
+        import pandas as pd
+        root = Path(dataset_root) if dataset_root is not None else None
+        if root is None:
+            return None
+        p = root / "meta" / "tasks_high_level.parquet"
+        if not p.exists():
+            return None
+        df = pd.read_parquet(p)
+        if "task_index" not in df.columns:
+            return None
+        if "scenario_type" in df.columns:
+            df = df[df["scenario_type"].astype(str) == "cot"]
+        if "response_type" in df.columns:
+            df = df[df["response_type"].astype(str) == "answer"]
+        cot_map = {}
+        for _, row in df.iterrows():
+            task_index = int(row["task_index"])
+            cot_map[task_index] = {
+                "instruction": str(row.get("task", "")),
+                "question": str(row.get("user_prompt", "")),
+                "answer": str(row.get("robot_utterance", "")),
+            }
+        return cot_map
+    except Exception:
+        return None
+
+
+def _load_vqa_map(dataset_root: str):
+    """qa_labels.parquet: map (episode_index, frame_idx) -> list of QA dicts."""
+    try:
+        import pandas as pd
+        root = Path(dataset_root) if dataset_root is not None else None
+        if root is None:
+            return None
+        p = root / "meta" / "qa_labels.parquet"
+        if not p.exists():
+            return None
+        df = pd.read_parquet(p)
+        required_cols = {"episode_index", "frame_idx", "question", "answer"}
+        if not required_cols.issubset(set(df.columns)):
+            return None
+        vqa_map = {}
+        for (episode_index, frame_idx), sub in df.groupby(
+            ["episode_index", "frame_idx"]
+        ):
+            qa_list = []
+            for _, row in sub.iterrows():
+                qa_list.append(
+                    {
+                        "question": str(row.get("question", "")),
+                        "answer": str(row.get("answer", "")),
+                        "type": str(row.get("type", "")),
+                    }
+                )
+            vqa_map[(int(episode_index), int(frame_idx))] = qa_list
+        return vqa_map
     except Exception:
         return None
 
@@ -146,19 +209,38 @@ class PreprocessedDataset(Dataset[T_co]):
         # self.norm_stats = norm_stats
         self.lerobot_config = lerobot_config
 
-        self.data_config = X2RDataProcessingConfig().update(
+        self.data_config = X2RDataProcessingConfig()
+        self.data_config.update(
             train_test_split=self.dataload_config["train_test_split"],
             split_seed=self.dataload_config["split_seed"],
             predict_action_keys=self.dataload_config["predict_action_keys"],
             obs_action_keys=self.dataload_config["obs_action_keys"],
             resolution=self.dataload_config.get("resolution", None),
             priority_order=self.dataload_config.get("priority_order", None),
+            generate_subtask_ratio=self.dataload_config.get(
+                "generate_subtask_ratio", self.data_config.generate_subtask_ratio
+            ),
+            generate_vqa_ratio=self.dataload_config.get(
+                "generate_vqa_ratio", self.data_config.generate_vqa_ratio
+            ),
+            generate_cot_ratio=self.dataload_config.get(
+                "generate_cot_ratio", self.data_config.generate_cot_ratio
+            ),
+            vqa_types=self.dataload_config.get(
+                "vqa_types", self.data_config.vqa_types
+            ),
         )
 
         self._cam_key_mapping = KEY_MAPPINGS[self.hf_dataset.meta.repo_id]["camera"]
         self._state_key_mapping = KEY_MAPPINGS[self.hf_dataset.meta.repo_id]["state"]
         self._action_key_mapping = KEY_MAPPINGS[self.hf_dataset.meta.repo_id]["action"]
-        self._subtask_id2name, self._high_level_id2text = _load_meta_mappings(self.lerobot_config.get('root', None))
+        self._subtask_id2name, self._high_level_id2text = _load_meta_mappings(
+            self.lerobot_config.get("root", None)
+        )
+        self._high_level_cot_map = _load_high_level_cot_map(
+            self.lerobot_config.get("root", None)
+        )
+        self._vqa_map = _load_vqa_map(self.lerobot_config.get("root", None))
 
 
     def _vision_preprocess(self, frames):
@@ -220,8 +302,45 @@ class PreprocessedDataset(Dataset[T_co]):
             htxt = self._high_level_id2text.get(hid, '')
             if htxt:
                 instruction_info['instruction'] = htxt
+
+        # 新增标记: attach CoT prompt/answer (from tasks_high_level.parquet)
+        if self._high_level_cot_map is not None and "task_index_high_level" in data:
+            hid = int(data["task_index_high_level"])
+            cot_item = self._high_level_cot_map.get(hid)
+            if cot_item:
+                instruction_info["cot_instruction"] = cot_item.get("instruction", "")
+                instruction_info["cot_question"] = cot_item.get("question", "")
+                instruction_info["cot_answer"] = cot_item.get("answer", "")
+
+        # 新增标记: attach VQA question/answer (from qa_labels.parquet)
+        if (
+            self._vqa_map is not None
+            and "vqa" in data
+            and int(data["vqa"]) == 1
+        ):
+            episode_index = data.get("episode_index", None)
+            if episode_index is not None:
+                key = (int(episode_index), int(frame_index))
+                qa_list = self._vqa_map.get(key)
+                if qa_list:
+                    allowed_types = self.data_config.vqa_types
+                    if allowed_types:
+                        qa_list = [
+                            qa
+                            for qa in qa_list
+                            if str(qa.get("type", "")) in allowed_types
+                        ]
+                    if qa_list:
+                        qa_item = random.choice(qa_list)
+                        instruction_info["vqa_question"] = qa_item.get(
+                            "question", ""
+                        )
+                        instruction_info["vqa_answer"] = qa_item.get("answer", "")
+                        instruction_info["vqa_type"] = qa_item.get("type", "")
         
         generate_subtask_ratio = self.data_config.generate_subtask_ratio
+        generate_vqa_ratio = self.data_config.generate_vqa_ratio
+        generate_cot_ratio = self.data_config.generate_cot_ratio
 
         complete_text, generate_subtask = get_wallx_normal_text(
             instruction_info,
@@ -230,6 +349,8 @@ class PreprocessedDataset(Dataset[T_co]):
             self.data_config.priority_order,
             self._cam_key_mapping,
             generate_subtask_ratio=generate_subtask_ratio,
+            generate_vqa_ratio=generate_vqa_ratio,
+            generate_cot_ratio=generate_cot_ratio,
         )
         text = process_grounding_points(
             complete_text, h, w, resize_h, resize_w, self.data_config.model_type

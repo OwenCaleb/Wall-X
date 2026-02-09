@@ -476,6 +476,8 @@ def get_wallx_normal_text(
     priority_order: Optional[OrderedDict] = None,
     cam_mapping: Optional[Dict[str, str]] = None,
     generate_subtask_ratio: float = 0.0,
+    generate_vqa_ratio: float = 0.0,
+    generate_cot_ratio: float = 0.0,
 ) -> Tuple[str, bool]:
     """Construct complete multimodal prompt text for Wall-X model.
 
@@ -493,6 +495,8 @@ def get_wallx_normal_text(
         priority_order: Priority order for instruction sampling
         cam_mapping: Camera name mapping dictionary
         generate_subtask_ratio: Probability of generating subtask instead of actions
+        generate_vqa_ratio: Probability of generating VQA instead of actions
+        generate_cot_ratio: Probability of generating CoT instead of actions
 
     Returns:
         Tuple of (formatted_prompt_text, is_subtask_generation)
@@ -528,8 +532,46 @@ def get_wallx_normal_text(
     generate_subtask = False
     priority_keys = ["subtask_generation", "distribute"] #在控制流层面是等价的 比如 "distribute": true
 
+    vqa_question = frame_instruction_info.get("vqa_question", "")
+    vqa_answer = frame_instruction_info.get("vqa_answer", "")
+    vqa_type = frame_instruction_info.get("vqa_type", "")
+    cot_question = frame_instruction_info.get("cot_question", "")
+    cot_answer = frame_instruction_info.get("cot_answer", "")
+    cot_instruction = frame_instruction_info.get("cot_instruction", "")
+
     # Decide whether to generate subtask or actions 也许需要增加分支，一定概率走COT（对应的prompt不一样），同理也有一条分支走QA,但是由于QA数据的密度小，因此单独增加一个mode，也采用X2RDataProcessingConfig里增加'if_vqa'字段，然后作为参数传进来；1则全部走QA数据pieline,0则走其他pipeline;且对于多个QA随机抽取一个
     if (
+        vqa_question
+        and vqa_answer
+        and random.random() < generate_vqa_ratio
+    ):
+        instruction = frame_instruction_info.get("instruction", "")
+        vqa_type_text = f" ({vqa_type})" if vqa_type else ""
+        text_prompt = "\nAnswer the question based on the observation.\n"
+        user_message = (
+            f"{user_request} {instruction}\n"
+            f"Question{vqa_type_text}: {vqa_question}{text_prompt}{role_end_symbol}\n"
+        )
+        assistant_output = (
+            f"{role_start_symbol}assistant\n{vqa_answer}\n{role_end_symbol}\n"
+        )
+        generate_subtask = True
+    elif (
+        cot_question
+        and cot_answer
+        and random.random() < generate_cot_ratio
+    ):
+        instruction = cot_instruction or frame_instruction_info.get("instruction", "")
+        text_prompt = "\nPlease think step by step and answer.\n"
+        user_message = (
+            f"{user_request} {instruction}\n"
+            f"Question: {cot_question}{text_prompt}{role_end_symbol}\n"
+        )
+        assistant_output = (
+            f"{role_start_symbol}assistant\n{cot_answer}\n{role_end_symbol}\n"
+        )
+        generate_subtask = True
+    elif (
         bool(set(frame_instruction_info.keys()) & set(priority_keys))
         and random.random() < generate_subtask_ratio
     ):
