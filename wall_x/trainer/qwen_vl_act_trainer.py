@@ -316,12 +316,14 @@ class QwenVlAct_Trainer:
         if isinstance(self.dataset, PreprocessedDataset):
             if getattr(self, "train_dataloader", None) is not None:
                 self.dataset._train()
-                self.train_sampler.set_epoch(epoch)
+                if self.train_sampler is not None: # 适应单卡 和多卡两种情况；单卡时train_sampler为None，不需要调用set_epoch；多卡时需要调用set_epoch来确保每个epoch数据划分不同。
+                    self.train_sampler.set_epoch(epoch)
             else:
                 self.train_dataloader, self.train_sampler = (
                     self.dataset.get_train_dataloader()
                 )
-                self.train_sampler.set_epoch(epoch)
+                if self.train_sampler is not None:
+                    self.train_sampler.set_epoch(epoch)
         else:
             self.train_dataloader = self.dataset.get_train_dataloader()
 
