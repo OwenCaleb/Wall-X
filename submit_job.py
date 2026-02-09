@@ -72,7 +72,11 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 # export HF_HOME=$HOME/.cache/huggingface
 # export HF_HUB_CACHE=$HF_HOME/hub
 # export TRANSFORMERS_CACHE=$HF_HOME/transformers
-
+export NCCL_DEBUG=INFO
+export TORCH_DISTRIBUTED_DEBUG=DETAIL
+export NCCL_ASYNC_ERROR_HANDLING=1
+export NCCL_BLOCKING_WAIT=1
+export TORCH_NCCL_TRACE_BUFFER_SIZE=1048576
 # ---- Conda ----
 source ~/.bashrc
 source /opt/conda/etc/profile.d/conda.sh
