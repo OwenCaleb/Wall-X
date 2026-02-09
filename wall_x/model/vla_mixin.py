@@ -22,7 +22,7 @@ from wall_x.model.model_utils import find_first_last_ones
 
 ALL_ATTENTION_FUNCTIONS: AttentionInterface = AttentionInterface()
 logger = logging.get_logger(__name__)
-
+from wall_x.data.config import ACTION_DATASET_NAMES, MULTIMODAL_DATASET_NAMES
 
 X2ROBOT_ATTENTION_FUNCTIONS = []
 ATTENTION_TYPES_WITH_2D_MASK = [
@@ -783,13 +783,13 @@ class ActionGenerationMixin(GenerationMixin):
             unique_datasets_name = list(set(dataset_names))
             channel_loss_dict = {
                 dataset_name: torch.tensor(0.0, device=logits.device)
-                for dataset_name in unique_datasets_name
-                # for dataset_name in _ACTION_DATASET_NAMES + _MULTIMODAL_DATASET_NAMES
+                # for dataset_name in unique_datasets_name
+                for dataset_name in ACTION_DATASET_NAMES + MULTIMODAL_DATASET_NAMES
             } #  存储交叉熵损失
             channel_loss_count_dict = {
                 dataset_name: torch.tensor(0, device=logits.device)
-                for dataset_name in unique_datasets_name
-                # for dataset_name in _ACTION_DATASET_NAMES + _MULTIMODAL_DATASET_NAMES
+                # for dataset_name in unique_datasets_name
+                for dataset_name in ACTION_DATASET_NAMES + MULTIMODAL_DATASET_NAMES
             } # # 统计 action dataset 的有效 token 数量
         else:
             unique_datasets_name, channel_loss_dict, channel_loss_count_dict = (

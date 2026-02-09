@@ -384,16 +384,16 @@ class QwenVlAct_Trainer:
                             f"Warning: NaN loss detected in epoch: {epoch}, step: {i}",
                             flush=True,
                         )
-                        # 新增 Keep timers consistent so the next iteration can proceed safely.
-                        self.timers("interval-time").stop()
-                        if i < len(self.train_dataloader) - 1:
-                            self.timers("interval-time", log_level=0).start(
-                                barrier=False
-                            )
-                            self.timers("data-load", log_level=0).start(
-                                barrier=False
-                            )
-                        continue
+                        # # 新增 Keep timers consistent so the next iteration can proceed safely.防止NaN导致timers状态不一致，从而影响下一步的timers使用。
+                        # self.timers("interval-time").stop()
+                        # if i < len(self.train_dataloader) - 1:
+                        #     self.timers("interval-time", log_level=0).start(
+                        #         barrier=False
+                        #     )
+                        #     self.timers("data-load", log_level=0).start(
+                        #         barrier=False
+                        #     )
+                        # continue
 
                     # Backward pass
                     self.timers("backward-compute", log_level=0).start(barrier=False)
