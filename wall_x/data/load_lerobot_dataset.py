@@ -212,6 +212,10 @@ class _StrictMixSampler(Sampler[int]):
         self.seed = int(seed)
         self.drop_last = bool(drop_last)
         self.epoch = 0
+        if self.vqa_len > 0 and self.weight_main > 0:
+            self.vqa_count = int(self.main_len * self.weight_vqa / self.weight_main)
+        else:
+            self.vqa_count = 0
 
     def set_epoch(self, epoch):
         self.epoch = int(epoch)
@@ -221,16 +225,15 @@ class _StrictMixSampler(Sampler[int]):
         g.manual_seed(self.seed + self.epoch)
 
         main_indices = torch.randperm(self.main_len, generator=g)
-        vqa_count = int(self.main_len * self.weight_vqa / self.weight_main)
         vqa_indices = torch.empty(0, dtype=torch.long)
-        if vqa_count > 0 and self.vqa_len > 0:
-            if self.vqa_len >= vqa_count:
-                vqa_indices = torch.randperm(self.vqa_len, generator=g)[:vqa_count]
+        if self.vqa_count > 0:
+            if self.vqa_len >= self.vqa_count:
+                vqa_indices = torch.randperm(self.vqa_len, generator=g)[: self.vqa_count]
             else:
                 vqa_indices = torch.randint(
                     0,
                     self.vqa_len,
-                    (vqa_count,),
+                    (self.vqa_count,),
                     generator=g,
                 )
             vqa_indices = vqa_indices + self.main_len
@@ -252,9 +255,7 @@ class _StrictMixSampler(Sampler[int]):
         return iter(all_indices[self.rank::self.num_replicas].tolist())
 
     def __len__(self):
-        total = self.main_len + int(
-            self.main_len * self.weight_vqa / self.weight_main
-        )
+        total = self.main_len + self.vqa_count
         if self.drop_last:
             total = (total // self.num_replicas) * self.num_replicas
         return total // self.num_replicas
