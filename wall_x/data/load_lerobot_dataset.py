@@ -9,7 +9,6 @@ from torch.utils.data import (
     ConcatDataset,
     DistributedSampler,
     Sampler,
-    WeightedRandomSampler,
     random_split,
 )
 from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
@@ -191,39 +190,74 @@ class _IndexDatasetWrapper:
         return getattr(self.dataset, name)
 
 
-class _DistributedWeightedSampler(Sampler[int]):
-    # Label【QAdataset】【distributed weighted sampler for VQA mix】
+class _StrictMixSampler(Sampler[int]):
+    # Label【QAdataset】【strict mix sampler without cross-rank duplicates】
     def __init__(
         self,
-        weights,
-        num_samples,
+        main_len,
+        vqa_len,
+        weight_vqa,
+        weight_main,
         num_replicas,
         rank,
         seed=0,
+        drop_last=True,
     ):
-        self.weights = torch.as_tensor(weights, dtype=torch.double)
-        self.num_samples = int(num_samples)
+        self.main_len = int(main_len)
+        self.vqa_len = int(vqa_len)
+        self.weight_vqa = float(weight_vqa)
+        self.weight_main = float(weight_main)
         self.num_replicas = int(num_replicas)
         self.rank = int(rank)
         self.seed = int(seed)
+        self.drop_last = bool(drop_last)
         self.epoch = 0
 
     def set_epoch(self, epoch):
         self.epoch = int(epoch)
 
-    def __iter__(self):
+    def _build_indices(self):
         g = torch.Generator()
-        g.manual_seed(self.seed + self.epoch + self.rank)
-        indices = torch.multinomial(
-            self.weights,
-            self.num_samples,
-            replacement=True,
-            generator=g,
-        )
-        return iter(indices.tolist())
+        g.manual_seed(self.seed + self.epoch)
+
+        main_indices = torch.randperm(self.main_len, generator=g)
+        vqa_count = int(self.main_len * self.weight_vqa / self.weight_main)
+        vqa_indices = torch.empty(0, dtype=torch.long)
+        if vqa_count > 0 and self.vqa_len > 0:
+            if self.vqa_len >= vqa_count:
+                vqa_indices = torch.randperm(self.vqa_len, generator=g)[:vqa_count]
+            else:
+                vqa_indices = torch.randint(
+                    0,
+                    self.vqa_len,
+                    (vqa_count,),
+                    generator=g,
+                )
+            vqa_indices = vqa_indices + self.main_len
+
+        all_indices = torch.cat([main_indices, vqa_indices])
+        if all_indices.numel() > 0:
+            perm = torch.randperm(all_indices.numel(), generator=g)
+            all_indices = all_indices[perm]
+
+        total = all_indices.numel()
+        if self.drop_last:
+            total = (total // self.num_replicas) * self.num_replicas
+            all_indices = all_indices[:total]
+
+        return all_indices
+
+    def __iter__(self):
+        all_indices = self._build_indices()
+        return iter(all_indices[self.rank::self.num_replicas].tolist())
 
     def __len__(self):
-        return self.num_samples
+        total = self.main_len + int(
+            self.main_len * self.weight_vqa / self.weight_main
+        )
+        if self.drop_last:
+            total = (total // self.num_replicas) * self.num_replicas
+        return total // self.num_replicas
 
 
 class PreprocessedDataset(Dataset[T_co]):
@@ -451,7 +485,7 @@ class PreprocessedDataset(Dataset[T_co]):
         batch_size = self.config.get("batch_size_per_gpu", 8)
         num_workers = self.config.get("num_workers", 4)
 
-        # Label【QAdataset】【weighted mix sampler when VQA-only dataset is available】
+        # Label【QAdataset】【strict mix sampler for VQA-only dataset】
         vqa_dataset = getattr(self, "_vqa_dataset", None)
         vqa_weights = getattr(self, "_vqa_mix_weights", None)
         if (
@@ -463,24 +497,16 @@ class PreprocessedDataset(Dataset[T_co]):
             weight_vqa, weight_main = vqa_weights
             if main_len > 0 and vqa_len > 0 and weight_vqa > 0 and weight_main > 0:
                 mix_dataset = ConcatDataset([self, vqa_dataset])
-                main_weight = weight_main / float(main_len)
-                vqa_weight = weight_vqa / float(vqa_len)
-                weights = [main_weight] * main_len + [vqa_weight] * vqa_len
-                if self.world_size == 1:
-                    sampler = WeightedRandomSampler(
-                        weights=weights,
-                        num_samples=main_len,
-                        replacement=True,
-                    )
-                else:
-                    samples_per_rank = (main_len // self.world_size)
-                    sampler = _DistributedWeightedSampler(
-                        weights=weights,
-                        num_samples=samples_per_rank,
-                        num_replicas=self.world_size,
-                        rank=self.rank,
-                        seed=self.seed,
-                    )
+                sampler = _StrictMixSampler(
+                    main_len=main_len,
+                    vqa_len=vqa_len,
+                    weight_vqa=weight_vqa,
+                    weight_main=weight_main,
+                    num_replicas=self.world_size,
+                    rank=self.rank,
+                    seed=self.seed,
+                    drop_last=True,
+                )
                 dataloader = torch.utils.data.DataLoader(
                     mix_dataset,
                     batch_size=batch_size,
