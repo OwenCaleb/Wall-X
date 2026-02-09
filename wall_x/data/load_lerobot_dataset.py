@@ -5,7 +5,12 @@ LeRobot Dataset Loader - Distributed Version
 import numpy as np
 import torch
 import random
-from torch.utils.data import DistributedSampler, random_split
+from torch.utils.data import (
+    ConcatDataset,
+    DistributedSampler,
+    WeightedRandomSampler,
+    random_split,
+)
 from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
 from typing import Protocol, SupportsIndex, TypeVar
 from qwen_vl_utils.vision_process import smart_resize
@@ -169,6 +174,22 @@ class Dataset(Protocol[T_co]):
         raise NotImplementedError("Subclasses of Dataset should implement __len__.")
 
 
+class _IndexDatasetWrapper:
+    # Label【QAdataset】【dataset wrapper to index VQA-only samples】
+    def __init__(self, dataset, indices):
+        self.dataset = dataset
+        self.indices = indices
+
+    def __len__(self):
+        return len(self.indices)
+
+    def __getitem__(self, idx):
+        return self.dataset[self.indices[idx]]
+
+    def __getattr__(self, name):
+        return getattr(self.dataset, name)
+
+
 class PreprocessedDataset(Dataset[T_co]):
     def __init__(
         self,
@@ -228,6 +249,12 @@ class PreprocessedDataset(Dataset[T_co]):
             ),
             vqa_types=self.dataload_config.get(
                 "vqa_types", self.data_config.vqa_types
+            ),
+            vqa_mix_weight_vqa=self.dataload_config.get(
+                "vqa_mix_weight_vqa", self.data_config.vqa_mix_weight_vqa
+            ),
+            vqa_mix_weight_main=self.dataload_config.get(
+                "vqa_mix_weight_main", self.data_config.vqa_mix_weight_main
             ),
         )
 
@@ -387,6 +414,46 @@ class PreprocessedDataset(Dataset[T_co]):
 
         batch_size = self.config.get("batch_size_per_gpu", 8)
         num_workers = self.config.get("num_workers", 4)
+
+        # Label【QAdataset】【weighted mix sampler when VQA-only dataset is available】
+        vqa_dataset = getattr(self, "_vqa_dataset", None)
+        vqa_weights = getattr(self, "_vqa_mix_weights", None)
+        if (
+            vqa_dataset is not None
+            and vqa_weights is not None
+            and self.world_size == 1
+        ):
+            main_len = len(self)
+            vqa_len = len(vqa_dataset)
+            weight_vqa, weight_main = vqa_weights
+            if main_len > 0 and vqa_len > 0 and weight_vqa > 0 and weight_main > 0:
+                mix_dataset = ConcatDataset([self, vqa_dataset])
+                main_weight = weight_main / float(main_len)
+                vqa_weight = weight_vqa / float(vqa_len)
+                weights = [main_weight] * main_len + [vqa_weight] * vqa_len
+                sampler = WeightedRandomSampler(
+                    weights=weights,
+                    num_samples=main_len,
+                    replacement=True,
+                )
+                dataloader = torch.utils.data.DataLoader(
+                    mix_dataset,
+                    batch_size=batch_size,
+                    sampler=sampler,
+                    num_workers=num_workers,
+                    collate_fn=DataCollator(
+                        self.config,
+                        self.dataload_config,
+                        self.normalizer_action,
+                        self.normalizer_propri,
+                        self.lerobot_config,
+                    ),
+                    pin_memory=True,
+                    persistent_workers=num_workers > 0,
+                    prefetch_factor=2,
+                    drop_last=True,
+                )
+                return dataloader, None
 
         # Create distributed sampler
         sampler = DistributedSampler(
@@ -762,6 +829,56 @@ def load_lerobot_data(
         rank=rank,
         world_size=world_size,
     )
+
+    # Label【QAdataset】【build VQA-only dataset and attach weighted mix settings】
+    vqa_weight = dataset.data_config.vqa_mix_weight_vqa
+    main_weight = dataset.data_config.vqa_mix_weight_main
+    if vqa_weight > 0 and main_weight > 0 and dataset._vqa_map is not None:
+        train_subset = dataset.train_dataset
+        base_dataset = getattr(train_subset, "dataset", None)
+        base_indices = getattr(train_subset, "indices", None)
+        hf_dataset = getattr(base_dataset, "hf_dataset", None)
+        if base_dataset is not None and base_indices is not None and hf_dataset is not None:
+            episode_col = hf_dataset["episode_index"]
+            frame_col = hf_dataset["frame_index"]
+            vqa_col = hf_dataset["vqa"] if "vqa" in hf_dataset.column_names else None
+            allowed_types = dataset.data_config.vqa_types
+
+            vqa_indices = []
+            for idx in base_indices:
+                if vqa_col is not None and int(vqa_col[idx]) != 1:
+                    continue
+                episode_index = int(episode_col[idx])
+                frame_index = int(frame_col[idx])
+                qa_list = dataset._vqa_map.get((episode_index, frame_index))
+                if not qa_list:
+                    continue
+                if allowed_types:
+                    qa_list = [
+                        qa
+                        for qa in qa_list
+                        if str(qa.get("type", "")) in allowed_types
+                    ]
+                if not qa_list:
+                    continue
+                vqa_indices.append(idx)
+
+            if vqa_indices:
+                vqa_raw_dataset = _IndexDatasetWrapper(base_dataset, vqa_indices)
+                vqa_dataset = PreprocessedDataset(
+                    vqa_raw_dataset,
+                    config,
+                    dataload_config,
+                    normalizer_action,
+                    normalizer_propri,
+                    lerobot_config,
+                    seed=seed,
+                    rank=rank,
+                    world_size=world_size,
+                    test_only=True,
+                )
+                dataset._vqa_dataset = vqa_dataset
+                dataset._vqa_mix_weights = (vqa_weight, main_weight)
 
     # Calculate samples per process
     if world_size > 1:
