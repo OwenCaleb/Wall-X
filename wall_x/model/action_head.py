@@ -113,7 +113,10 @@ class Normalizer(nn.Module):
         new_xs = []
         dataset_names = [name for name in dataset_names if name != "x2_multimodal"]
         for x, dataset_name in zip(xs, dataset_names):
-            x = (x - self.min[dataset_name]) / (self.delta[dataset_name])
+            delta = self.delta[dataset_name]
+            # Avoid NaN when stats contain zero delta values. 注意；新增了防止NAN的逻辑，如果delta中有0值，则替换为1，保证后续计算不会出现除以0的情况。
+            delta = torch.where(delta == 0, torch.ones_like(delta), delta)
+            x = (x - self.min[dataset_name]) / delta
             x = x * 2 - 1
             x = torch.clamp(x, -1, 1)
             new_xs.append(x)
