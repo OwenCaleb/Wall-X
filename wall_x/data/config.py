@@ -100,8 +100,6 @@ class X2RDataProcessingConfig:
     generate_vqa_ratio: float = 0.0
     generate_cot_ratio: float = 0.0
     vqa_types: Optional[List[str]] = None
-    vqa_mix_weight_vqa: float = 0.0
-    vqa_mix_weight_main: float = 0.0
     # generate_subtask_ratio: float = 0.3
 
     def __post_init__(self):

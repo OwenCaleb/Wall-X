@@ -316,14 +316,12 @@ class QwenVlAct_Trainer:
         if isinstance(self.dataset, PreprocessedDataset):
             if getattr(self, "train_dataloader", None) is not None:
                 self.dataset._train()
-                if self.train_sampler is not None: # 适应单卡 和多卡两种情况；单卡时train_sampler为None，不需要调用set_epoch；多卡时需要调用set_epoch来确保每个epoch数据划分不同。
-                    self.train_sampler.set_epoch(epoch)
+                self.train_sampler.set_epoch(epoch)
             else:
                 self.train_dataloader, self.train_sampler = (
                     self.dataset.get_train_dataloader()
                 )
-                if self.train_sampler is not None:
-                    self.train_sampler.set_epoch(epoch)
+                self.train_sampler.set_epoch(epoch)
         else:
             self.train_dataloader = self.dataset.get_train_dataloader()
 
@@ -386,16 +384,16 @@ class QwenVlAct_Trainer:
                             f"Warning: NaN loss detected in epoch: {epoch}, step: {i}",
                             flush=True,
                         )
-                        # # 新增 Keep timers consistent so the next iteration can proceed safely.防止NaN导致timers状态不一致，从而影响下一步的timers使用。
-                        # self.timers("interval-time").stop()
-                        # if i < len(self.train_dataloader) - 1:
-                        #     self.timers("interval-time", log_level=0).start(
-                        #         barrier=False
-                        #     )
-                        #     self.timers("data-load", log_level=0).start(
-                        #         barrier=False
-                        #     )
-                        # continue
+                        # Keep timers consistent so the next iteration can proceed safely.
+                        self.timers("interval-time").stop()
+                        if i < len(self.train_dataloader) - 1:
+                            self.timers("interval-time", log_level=0).start(
+                                barrier=False
+                            )
+                            self.timers("data-load", log_level=0).start(
+                                barrier=False
+                            )
+                        continue
 
                     # Backward pass
                     self.timers("backward-compute", log_level=0).start(barrier=False)
