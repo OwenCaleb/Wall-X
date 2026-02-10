@@ -55,8 +55,8 @@ class VQAWrapper(object):
         model.eval()
         return model
 
-    def generate(self, image: Image.Image, text_prompt: str, **kwargs) -> str:
-        inputs = self.processor(text=[text_prompt], images=[image], return_tensors="pt")
+    def generate(self, images: list, text_prompt: str, **kwargs) -> str:
+        inputs = self.processor(text=[text_prompt], images=images, return_tensors="pt")
         inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
         generation_params = {
@@ -80,7 +80,14 @@ class VQAWrapper(object):
         return response
 
 
-def build_prompt(task_type: str, instruction: str, question: str, vqa_type: str) -> str:
+def build_prompt(
+    task_type: str,
+    instruction: str,
+    question: str,
+    vqa_type: str,
+    view_names: list,
+    view_count: int,
+) -> str:
     role_start_symbol = "<|im_start|>"
     role_end_symbol = "<|im_end|>"
     vision_start_symbol = "<|vision_start|>"
@@ -88,9 +95,19 @@ def build_prompt(task_type: str, instruction: str, question: str, vqa_type: str)
     image_pad_symbol = "<|image_pad|>"
 
     prologue = f"{role_start_symbol}system\nYou are a helpful assistant.{role_end_symbol}\n"
+    if view_names:
+        used_view_names = view_names
+    elif view_count == 1:
+        used_view_names = ["front view"]
+    else:
+        used_view_names = ["front view", "left wrist view", "right wrist view"]
+    observation = ""
+    for name in used_view_names:
+        observation += (
+            f" {name}: {vision_start_symbol}{image_pad_symbol}{vision_end_symbol}"
+        )
     user_request = (
-        f"{role_start_symbol}user\nObservation: "
-        f"{vision_start_symbol}{image_pad_symbol}{vision_end_symbol}\n"
+        f"{role_start_symbol}user\nObservation:{observation}\n"
         f"Instruction:"
     )
 
@@ -131,13 +148,21 @@ def load_train_config(model_path: str, config_path: str = None) -> dict:
         return yaml.load(f, Loader=yaml.FullLoader)
 
 
-def decode_image(payload: dict) -> Image.Image:
+def decode_images(payload: dict) -> list:
+    if "image_base64_list" in payload:
+        images = []
+        for item in payload["image_base64_list"]:
+            raw = base64.b64decode(item)
+            images.append(Image.open(BytesIO(raw)).convert("RGB"))
+        return images
+    if "image_paths" in payload:
+        return [Image.open(path).convert("RGB") for path in payload["image_paths"]]
     if "image_base64" in payload:
         raw = base64.b64decode(payload["image_base64"])
-        return Image.open(BytesIO(raw)).convert("RGB")
+        return [Image.open(BytesIO(raw)).convert("RGB")]
     if "image_path" in payload:
-        return Image.open(payload["image_path"]).convert("RGB")
-    raise ValueError("image_base64 or image_path is required")
+        return [Image.open(payload["image_path"]).convert("RGB")]
+    raise ValueError("image_base64(_list) or image_path(s) is required")
 
 
 class VQAServer:
@@ -150,14 +175,24 @@ class VQAServer:
         instruction = payload.get("instruction", "")
         question = payload.get("question", "")
         vqa_type = payload.get("vqa_type", "")
+        view_names = payload.get("view_names", None)
         if task_type in ["vqa", "cot"] and not question:
             raise ValueError("question is required for vqa/cot")
         if task_type == "subtask" and not instruction:
             raise ValueError("instruction is required for subtask")
-        image = decode_image(payload)
+        images = decode_images(payload)
+        if view_names is not None and len(view_names) != len(images):
+            raise ValueError("view_names length must match number of images")
         generation_params = payload.get("generation_params", {})
-        prompt = build_prompt(task_type, instruction, question, vqa_type)
-        answer = self.wrapper.generate(image, prompt, **generation_params)
+        prompt = build_prompt(
+            task_type,
+            instruction,
+            question,
+            vqa_type,
+            view_names,
+            len(images),
+        )
+        answer = self.wrapper.generate(images, prompt, **generation_params)
         return {"answer": answer}
 
 
