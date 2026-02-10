@@ -1,11 +1,24 @@
+import argparse
+import base64
+import json
+import os
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from io import BytesIO
+
 import torch
+import yaml
 from PIL import Image
 from transformers import AutoProcessor
-import yaml
-import os
 
 from wall_x.model.qwen2_5_based.modeling_qwen2_5_vl_act import Qwen2_5_VLMoEForAction
 
+'''
+python scripts/vqa_inference.py \
+  --model_path /mnt/nas_ssd/workspace/wenboli/projects/Wall-X/wallx/models/wallx/wall-oss-flow-copy \
+  --config /mnt/nas_ssd/workspace/wenboli/projects/Wall-X/workspace/lerobot_example/config_qact_custom.yml \
+  --host 0.0.0.0 \
+  --port 8000
+'''
 
 class VQAWrapper(object):
     def __init__(self, model_path: str, train_config: dict = None):
@@ -76,37 +89,88 @@ class VQAWrapper(object):
         return response
 
 
+def load_train_config(model_path: str, config_path: str = None) -> dict:
+    if config_path:
+        with open(config_path, "r") as f:
+            return yaml.load(f, Loader=yaml.FullLoader)
+    with open(os.path.join(model_path, "config.yml"), "r") as f:
+        return yaml.load(f, Loader=yaml.FullLoader)
+
+
+def decode_image(payload: dict) -> Image.Image:
+    if "image_base64" in payload:
+        raw = base64.b64decode(payload["image_base64"])
+        return Image.open(BytesIO(raw)).convert("RGB")
+    if "image_path" in payload:
+        return Image.open(payload["image_path"]).convert("RGB")
+    raise ValueError("image_base64 or image_path is required")
+
+
+class VQAServer:
+    def __init__(self, model_path: str, config_path: str = None):
+        train_config = load_train_config(model_path, config_path)
+        self.wrapper = VQAWrapper(model_path=model_path, train_config=train_config)
+
+    def handle(self, payload: dict) -> dict:
+        question = payload.get("question", "")
+        if not question:
+            raise ValueError("question is required")
+        image = decode_image(payload)
+        generation_params = payload.get("generation_params", {})
+        answer = self.wrapper.generate(image, question, **generation_params)
+        return {"answer": answer}
+
+
+class VQARequestHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path != "/health":
+            self.send_response(404)
+            self.end_headers()
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(b"{\"status\":\"ok\"}")
+
+    def do_POST(self):
+        if self.path != "/vqa":
+            self.send_response(404)
+            self.end_headers()
+            return
+        length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(length)
+        try:
+            payload = json.loads(body.decode("utf-8"))
+            response = self.server.app.handle(payload)
+            data = json.dumps(response).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+        except Exception as exc:
+            err = json.dumps({"error": str(exc)}).encode("utf-8")
+            self.send_response(500)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(err)))
+            self.end_headers()
+            self.wfile.write(err)
+
+
+def serve(model_path: str, config_path: str, host: str, port: int) -> None:
+    app = VQAServer(model_path=model_path, config_path=config_path)
+    httpd = ThreadingHTTPServer((host, port), VQARequestHandler)
+    httpd.app = app
+    print(f"VQA server listening on http://{host}:{port}")
+    httpd.serve_forever()
+
+
 if __name__ == "__main__":
-    MODEL_PATH_FOR_MODULE_TEST = "/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/wallx/models/wallx/wall-oss-flow-copy"
-    train_config_path = "/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/workspace/lerobot_example/config_qact_custom.yml"
-    with open(train_config_path, "r") as f:
-        train_config = yaml.load(f, Loader=yaml.FullLoader)
-    wrapper = VQAWrapper(
-        model_path=MODEL_PATH_FOR_MODULE_TEST, train_config=train_config
-    )
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model_path", type=str, required=True)
+    parser.add_argument("--config", type=str, default=None)
+    parser.add_argument("--host", type=str, default="0.0.0.0")
+    parser.add_argument("--port", type=int, default=8000)
+    args = parser.parse_args()
 
-    try:
-        # test_question = "To move the red block in the plate with same color, what should you do next? Think step by step."
-        '''
-        Wall-Fast-Qwen25
-        model answer: To move the red block to the yellow plate, follow these steps:
-        1. Place the red block on the yellow plate.
-        2. Then, place the red block on the red plate.
-        This will ensure the red block is in the correct position relative to the yellow plate.
-        '''
-        
-        test_question="Place the green and white toy in the right_dark_brown_basket. Please think step by step and answer."
-
-        # Local Image
-        img = Image.open("/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/wallx/data/g1_new/lerobot/Teleop_251103_Sort_Anonymous_10Hz_old/frame_retarget/sample_000000/000000.jpg").convert("RGB")
-        # Internet Image
-        # import requests
-        # test_image_url = "https://www.ilankelman.org/stopsigns/australia.jpg"
-        # img = Image.open(requests.get(test_image_url, stream=True).raw).convert("RGB")
-
-        answer = wrapper.generate(img, test_question)
-
-        print("model answer:", answer)
-    except Exception as e:
-        print(f"model answer fail: {e}")
-# CUDA_VISIBLE_DEVICES=3 python scripts/vqa_inference.py 
+    serve(args.model_path, args.config, args.host, args.port)
