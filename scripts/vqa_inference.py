@@ -55,16 +55,7 @@ class VQAWrapper(object):
         model.eval()
         return model
 
-    def generate(self, image: Image.Image, text: str, **kwargs) -> str:
-        messages = [
-            {
-                "role": "user",
-                "content": [{"type": "image"}, {"type": "text", "text": text}],
-            }
-        ]
-        text_prompt = self.processor.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
-        )
+    def generate(self, image: Image.Image, text_prompt: str, **kwargs) -> str:
         inputs = self.processor(text=[text_prompt], images=[image], return_tensors="pt")
         inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
@@ -87,6 +78,45 @@ class VQAWrapper(object):
             generated_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False
         )[0]
         return response
+
+
+def build_prompt(task_type: str, instruction: str, question: str, vqa_type: str) -> str:
+    role_start_symbol = "<|im_start|>"
+    role_end_symbol = "<|im_end|>"
+    vision_start_symbol = "<|vision_start|>"
+    vision_end_symbol = "<|vision_end|>"
+    image_pad_symbol = "<|image_pad|>"
+
+    prologue = f"{role_start_symbol}system\nYou are a helpful assistant.{role_end_symbol}\n"
+    user_request = (
+        f"{role_start_symbol}user\nObservation: "
+        f"{vision_start_symbol}{image_pad_symbol}{vision_end_symbol}\n"
+        f"Instruction:"
+    )
+
+    instruction = instruction or ""
+    question = question or ""
+    vqa_type = vqa_type or ""
+
+    if task_type == "cot":
+        text_prompt = "\nPlease think step by step and answer.\n"
+        user_message = (
+            f"{user_request} {instruction}\n"
+            f"Question: {question}{text_prompt}{role_end_symbol}\n"
+        )
+    elif task_type == "subtask":
+        text_prompt = "\nPredict the next action in language.\n"
+        user_message = f"{user_request} {instruction}{text_prompt}{role_end_symbol}\n"
+    else:
+        vqa_type_text = f" ({vqa_type})" if vqa_type else ""
+        text_prompt = "\nAnswer the question based on the observation.\n"
+        user_message = (
+            f"{user_request} {instruction}\n"
+            f"Question{vqa_type_text}: {question}{text_prompt}{role_end_symbol}\n"
+        )
+
+    assistant_output = f"{role_start_symbol}assistant\n"
+    return prologue + user_message + assistant_output
 
 
 def load_train_config(model_path: str, config_path: str = None) -> dict:
@@ -112,12 +142,16 @@ class VQAServer:
         self.wrapper = VQAWrapper(model_path=model_path, train_config=train_config)
 
     def handle(self, payload: dict) -> dict:
+        task_type = payload.get("task_type", "vqa")
+        instruction = payload.get("instruction", "")
         question = payload.get("question", "")
-        if not question:
+        vqa_type = payload.get("vqa_type", "")
+        if task_type in ["vqa", "cot"] and not question:
             raise ValueError("question is required")
         image = decode_image(payload)
         generation_params = payload.get("generation_params", {})
-        answer = self.wrapper.generate(image, question, **generation_params)
+        prompt = build_prompt(task_type, instruction, question, vqa_type)
+        answer = self.wrapper.generate(image, prompt, **generation_params)
         return {"answer": answer}
 
 
