@@ -295,13 +295,13 @@ class PreprocessedDataset(Dataset[T_co]):
             if name:
                 instruction_info['subtask_generation'] = name
         
-        # 新增标记 Optionally replace base instruction with high-level task text
-        if self._high_level_id2text is not None and "task_index_high_level" in data:
+        # # 新增标记 Optionally replace base instruction with high-level task text 不用替换啊！！好大的坑
+        # if self._high_level_id2text is not None and "task_index_high_level" in data:
             
-            hid = int(data['task_index_high_level'])
-            htxt = self._high_level_id2text.get(hid, '')
-            if htxt:
-                instruction_info['instruction'] = htxt
+        #     hid = int(data['task_index_high_level'])
+        #     htxt = self._high_level_id2text.get(hid, '')
+        #     if htxt:
+        #         instruction_info['instruction'] = htxt
 
         # 新增标记: attach CoT prompt/answer (from tasks_high_level.parquet)
         if self._high_level_cot_map is not None and "task_index_high_level" in data:

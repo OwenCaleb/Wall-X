@@ -15,8 +15,8 @@ from typing import List, Tuple
 # CONFIG (all tunables here)
 # =========================
 DEFAULT_CHUNK_DIR = "videos/chunk-000"
-DEFAULT_VIDEO_RETARGET_DIR = "video_retarget"
-DEFAULT_FRAME_RETARGET_DIR = "frame_retarget"
+DEFAULT_VIDEO_RETARGET_DIR = "video_retarget_right"
+DEFAULT_FRAME_RETARGET_DIR = "frame_retarget_right"
 
 DEFAULT_STRIDE = 1
 DEFAULT_HZ = 10.0
@@ -235,7 +235,11 @@ if __name__ == "__main__":
 
 '''
 python retarget_videos_and_frames.py \
-  --root /mnt/nas_ssd/workspace/wenboli/projects/Wall-X/wallx/data/g1_new/lerobot/Teleop_251103_Sort_Anonymous_10Hz \
-  --camera_view observation.images.head_realsense_color \
+  --root /mnt/nas_ssd/workspace/wenboli/projects/Wall-X/wallx/data/g1_new/lerobot/Teleop_251103_Sort_Anonymous_10Hz_old \
+  --camera_view observation.images.right_hand_realsense_color \
   --stride 100
+  
+observation.images.head_realsense_color
+observation.images.left_hand_realsense_color
+observation.images.right_hand_realsense_color
 '''

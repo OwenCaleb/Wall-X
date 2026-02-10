@@ -13,7 +13,7 @@ python scripts/vqa_client.py \
 COT TASK
 python scripts/vqa_client.py \
   --url http://127.0.0.1:8000/vqa \
-    --images /path/front.jpg,/path/left_wrist.jpg,/path/right_wrist.jpg \
+    --images /mnt/nas_ssd/workspace/wenboli/projects/Wall-X/wallx/data/g1_new/lerobot/Teleop_251103_Sort_Anonymous_10Hz_old/frame_retarget/sample_000000/000000.jpg,/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/wallx/data/g1_new/lerobot/Teleop_251103_Sort_Anonymous_10Hz_old/frame_retarget_left/sample_000000/000000.jpg,/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/wallx/data/g1_new/lerobot/Teleop_251103_Sort_Anonymous_10Hz_old/frame_retarget_right/sample_000000/000000.jpg \
     --view_names "front view,left wrist view,right wrist view" \
   --task_type cot \
   --question "Place the green and white toy in the right_dark_brown_basket."
@@ -21,7 +21,7 @@ python scripts/vqa_client.py \
 SUBTASK TASK
 python scripts/vqa_client.py \
   --url http://127.0.0.1:8000/vqa \
-    --images /path/front.jpg,/path/left_wrist.jpg,/path/right_wrist.jpg \
+    --images /mnt/nas_ssd/workspace/wenboli/projects/Wall-X/wallx/data/g1_new/lerobot/Teleop_251103_Sort_Anonymous_10Hz_old/frame_retarget/sample_000000/000000.jpg,/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/wallx/data/g1_new/lerobot/Teleop_251103_Sort_Anonymous_10Hz_old/frame_retarget_left/sample_000000/000000.jpg,/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/wallx/data/g1_new/lerobot/Teleop_251103_Sort_Anonymous_10Hz_old/frame_retarget_right/sample_000000/000000.jpg \
     --view_names "front view,left wrist view,right wrist view" \
   --task_type subtask \
   --instruction "pick all objects in to the boxes."
@@ -29,7 +29,7 @@ python scripts/vqa_client.py \
 QA TASK
 python scripts/vqa_client.py \
   --url http://127.0.0.1:8000/vqa \
-    --images /path/front.jpg,/path/left_wrist.jpg,/path/right_wrist.jpg \
+    --images /mnt/nas_ssd/workspace/wenboli/projects/Wall-X/wallx/data/g1_new/lerobot/Teleop_251103_Sort_Anonymous_10Hz_old/frame_retarget/sample_000000/000000.jpg,/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/wallx/data/g1_new/lerobot/Teleop_251103_Sort_Anonymous_10Hz_old/frame_retarget_left/sample_000000/000000.jpg,/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/wallx/data/g1_new/lerobot/Teleop_251103_Sort_Anonymous_10Hz_old/frame_retarget_right/sample_000000/000000.jpg \
     --view_names "front view,left wrist view,right wrist view" \
   --task_type vqa \
   --instruction "pick all objects in to the boxes." \
