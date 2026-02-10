@@ -131,11 +131,42 @@ class Normalizer(nn.Module):
             x = (x + 1) / 2
             if mask is not None:
                 mask = mask[0].bool()
+                # -------- HARD ALIGN by padding stats (STOPGAP) -------- 补丁。用于数据集（微调记录维度）没有达到20维度（模型训练的维度）
+                d_stats = self.delta[dataset_name].shape[0]
+                d_mask = mask.shape[0]
+                if d_mask != d_stats:
+                    print(
+                        f"[WARN] dof_mask dim mismatch: mask_dim={d_mask}, stats_dim={d_stats}, "
+                        f"dataset={dataset_name}. Hard-align mask.",
+                        flush=True,
+                    )
+                    if d_mask > d_stats:
+                        mask = mask[:d_stats]
+                    else:
+                        pad = torch.zeros(d_stats - d_mask, dtype=mask.dtype, device=mask.device)
+                        mask = torch.cat([mask, pad], dim=0)
+
                 action_space_delta = self.delta[dataset_name][mask]
                 action_space_min = self.min[dataset_name][mask]
             else:
                 action_space_delta = self.delta[dataset_name]
                 action_space_min = self.min[dataset_name]
+            # -------- HARD ALIGN by padding stats (STOPGAP) -------- 补丁。用于数据集（微调记录维度）没有达到20维度（模型训练的维度）
+            d_stats = action_space_delta.shape[-1]
+            d_x = x.shape[-1]
+            if d_stats != d_x:
+                print(
+                    f"[WARN] unnormalize_data dim mismatch: x_dim={d_x}, stats_dim={d_stats}, "
+                    f"dataset={dataset_name}. Padding stats to match x_dim.",
+                    flush=True,
+                )
+                if d_stats < d_x:
+                    pad = d_x - d_stats
+                    # pad stats with zeros so new dims become constant 0 after unnormalize
+                    delta_pad = action_space_delta.new_zeros(pad)
+                    min_pad = action_space_min.new_zeros(pad)
+                    action_space_delta = torch.cat([action_space_delta, delta_pad], dim=-1)
+                    action_space_min = torch.cat([action_space_min, min_pad], dim=-1)
             x = x * action_space_delta + action_space_min
             new_xs.append(x)
         new_xs = torch.stack(new_xs)

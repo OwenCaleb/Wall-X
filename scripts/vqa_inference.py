@@ -77,8 +77,8 @@ class VQAWrapper(object):
 
 
 if __name__ == "__main__":
-    MODEL_PATH_FOR_MODULE_TEST = "/home/liwenbo/projects/VLA/wall-x/Pretrained_models/wall-oss-fast"
-    train_config_path = "/home/liwenbo/projects/VLA/wall-x/workspace/lerobot_example/config_qact.yml"
+    MODEL_PATH_FOR_MODULE_TEST = "/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/wallx/models/wallx/wall-oss-flow-copy"
+    train_config_path = "/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/workspace/lerobot_example/config_qact_custom.yml"
     with open(train_config_path, "r") as f:
         train_config = yaml.load(f, Loader=yaml.FullLoader)
     wrapper = VQAWrapper(
@@ -95,10 +95,10 @@ if __name__ == "__main__":
         This will ensure the red block is in the correct position relative to the yellow plate.
         '''
         
-        test_question="Locate the red block and the red plate. Please answer one by one: where is the red block (left/middle/right), and where is the red plate (left/middle/right)?"
+        test_question="Place the green and white toy in the right_dark_brown_basket. Please think step by step and answer."
 
         # Local Image
-        img = Image.open("/home/liwenbo/projects/VLA/wall-x/assets/cot_example_frame.png").convert("RGB")
+        img = Image.open("/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/wallx/data/g1_new/lerobot/Teleop_251103_Sort_Anonymous_10Hz_old/frame_retarget/sample_000000/000000.jpg").convert("RGB")
         # Internet Image
         # import requests
         # test_image_url = "https://www.ilankelman.org/stopsigns/australia.jpg"

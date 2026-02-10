@@ -21,6 +21,13 @@ def load_config(config_path):
 
 
 if __name__ == "__main__":
+    '''
+    主要，这里要处理掉所有的vqa cot
+    # 用于 darw 测试 action
+    generate_vqa_ratio: 0  
+    generate_cot_ratio: 0
+    generate_subtask_ratio: 0
+    '''
     parser = argparse.ArgumentParser()
     parser.add_argument("--pred_horizon", type=int, default=32)
     parser.add_argument("--origin_action_dim", type=int, default=19)
@@ -67,7 +74,7 @@ if __name__ == "__main__":
     total_frames = len(dataloader)
 
     predict_mode = "fast" if config.get("use_fast_tokenizer", False) else "diffusion"
-    action_dim = 20 if predict_mode == "diffusion" else origin_action_dim
+    action_dim = 20 if predict_mode == "diffusion" else origin_action_dim # 设置必须和训练维度对齐
     gt_traj = torch.zeros((total_frames, origin_action_dim))
     pred_traj = torch.zeros((total_frames, origin_action_dim))
 

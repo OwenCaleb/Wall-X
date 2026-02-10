@@ -5,7 +5,7 @@ log_name: "robotic_training"
 log_project: "vla_training"
 model_type: wall-oss
 pretrained_wallx_path: "/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/wallx/models/wallx/wall-oss-flow"  # Must set
-save_path: "/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/output_models/2628_flow"                # Must set
+save_path: "/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/output_models/26210_flow"                # Must set
 use_fast_tokenizer: False                       # True: train FAST, False: train Flow
 action_tokenizer_path: "/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/fast"         # Must set if use_fast_tokenizer is true
 processor_path: "/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/wallx/models/wallx/wall-oss-flow"
@@ -25,12 +25,12 @@ num_warmup_steps: 100
 num_training_steps: 64000000
 learning_rate: 0.00005
 min_lr: 0.00005
-num_epoch: 30
+num_epoch: 10
 gradient_accumulation_steps: 32
 # batch_size_per_gpu: 
 batch_size_per_gpu: 4
 padding_side: left
-epoch_save_interval: 10
+epoch_save_interval: 5
 
 # Training optimization settings 关闭即时编译
 FSDP2: True
@@ -71,9 +71,15 @@ customized_robot_config:
 data:
   use_lerobot: true
   vqa_types: ["spatial"]
-  generate_vqa_ratio: 1   # 有就一定走
-  generate_cot_ratio: 0.33
-  generate_subtask_ratio: 0.5
+
+  # 用于 darw 测试 action
+  generate_vqa_ratio: 0   # 有就一定走
+  generate_cot_ratio: 0
+  generate_subtask_ratio: 0
+
+  # generate_vqa_ratio: 1   # 有就一定走
+  # generate_cot_ratio: 0.33
+  # generate_subtask_ratio: 0.5
   # LeRobot dataset configuration
   lerobot_config:
     repo_id: "g1custom"
