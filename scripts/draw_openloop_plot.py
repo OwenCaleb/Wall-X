@@ -31,7 +31,7 @@ if __name__ == "__main__":
     
 
     # get train config
-    model_path = "/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/wallx/models/wallx/wall-oss-flow"
+    model_path = "/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/wallx/models/wallx/wall-oss-flow-copy"
     # action_tokenizer_path = "/home/liwenbo/projects/VLA/wall-x/fast"
     save_dir = "/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/save_path_dir"
     path = "/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/workspace/lerobot_example/config_qact_custom.yml"
@@ -67,7 +67,7 @@ if __name__ == "__main__":
     total_frames = len(dataloader)
 
     predict_mode = "fast" if config.get("use_fast_tokenizer", False) else "diffusion"
-    action_dim = 14 if predict_mode == "diffusion" else origin_action_dim
+    action_dim = 20 if predict_mode == "diffusion" else origin_action_dim
     gt_traj = torch.zeros((total_frames, origin_action_dim))
     pred_traj = torch.zeros((total_frames, origin_action_dim))
 
