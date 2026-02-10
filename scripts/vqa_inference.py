@@ -100,6 +100,8 @@ def build_prompt(task_type: str, instruction: str, question: str, vqa_type: str)
 
     if task_type == "cot":
         text_prompt = "\nPlease think step by step and answer.\n"
+        if not instruction:
+            instruction = question
         user_message = (
             f"{user_request} {instruction}\n"
             f"Question: {question}{text_prompt}{role_end_symbol}\n"
@@ -110,6 +112,8 @@ def build_prompt(task_type: str, instruction: str, question: str, vqa_type: str)
     else:
         vqa_type_text = f" ({vqa_type})" if vqa_type else ""
         text_prompt = "\nAnswer the question based on the observation.\n"
+        if not instruction:
+            instruction = question
         user_message = (
             f"{user_request} {instruction}\n"
             f"Question{vqa_type_text}: {question}{text_prompt}{role_end_symbol}\n"
@@ -147,7 +151,9 @@ class VQAServer:
         question = payload.get("question", "")
         vqa_type = payload.get("vqa_type", "")
         if task_type in ["vqa", "cot"] and not question:
-            raise ValueError("question is required")
+            raise ValueError("question is required for vqa/cot")
+        if task_type == "subtask" and not instruction:
+            raise ValueError("instruction is required for subtask")
         image = decode_image(payload)
         generation_params = payload.get("generation_params", {})
         prompt = build_prompt(task_type, instruction, question, vqa_type)
