@@ -73,13 +73,13 @@ data:
   vqa_types: ["spatial"]
 
   # 用于 darw 测试 action
-  # generate_vqa_ratio: 0   # 有就一定走
-  # generate_cot_ratio: 1
-  # generate_subtask_ratio: 0
+  generate_vqa_ratio: 0   # 有就一定走
+  generate_cot_ratio: 0
+  generate_subtask_ratio: 0
 
-  generate_vqa_ratio: 1   # 有就一定走
-  generate_cot_ratio: 0.33
-  generate_subtask_ratio: 0.5
+  # generate_vqa_ratio: 1   # 有就一定走
+  # generate_cot_ratio: 0.33
+  # generate_subtask_ratio: 0.5
   # LeRobot dataset configuration
   lerobot_config:
     repo_id: "g1custom"
