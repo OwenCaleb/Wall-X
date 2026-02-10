@@ -561,11 +561,11 @@ def get_wallx_normal_text(
         and cot_answer
         and random.random() < generate_cot_ratio
     ):
-        instruction = cot_instruction or frame_instruction_info.get("instruction", "")
+        instruction = frame_instruction_info.get("instruction", "")
         text_prompt = "\nPlease think step by step and answer in cot.\n"
         user_message = (
             f"{user_request} {instruction}\n"
-            f"Question: To {cot_question}, what should do next? {text_prompt}{role_end_symbol}\n"
+            f"What should do next? {text_prompt}{role_end_symbol}\n"
         )
         assistant_output = (
             f"{role_start_symbol}assistant\n{cot_answer}\n{role_end_symbol}\n"
