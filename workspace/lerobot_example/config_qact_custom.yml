@@ -5,7 +5,7 @@ log_name: "robotic_training"
 log_project: "vla_training"
 model_type: wall-oss
 pretrained_wallx_path: "/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/wallx/models/wallx/wall-oss-flow"  # Must set
-save_path: "/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/output_models/26210_flow"                # Must set
+save_path: "/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/output_models/26210_flow_subtask"                # Must set
 use_fast_tokenizer: False                       # True: train FAST, False: train Flow
 action_tokenizer_path: "/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/fast"         # Must set if use_fast_tokenizer is true
 processor_path: "/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/wallx/models/wallx/wall-oss-flow"
@@ -75,7 +75,7 @@ data:
   # 用于 darw 测试 action
   generate_vqa_ratio: 0   # 有就一定走
   generate_cot_ratio: 0
-  generate_subtask_ratio: 0
+  generate_subtask_ratio: 1
 
   # generate_vqa_ratio: 1   # 有就一定走
   # generate_cot_ratio: 0.33
