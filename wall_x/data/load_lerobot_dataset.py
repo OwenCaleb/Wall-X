@@ -229,6 +229,10 @@ class PreprocessedDataset(Dataset[T_co]):
             vqa_types=self.dataload_config.get(
                 "vqa_types", self.data_config.vqa_types
             ),
+            if_vqa=self.dataload_config.get("if_vqa", self.data_config.if_vqa),
+            path_drop_full_ratio=self.dataload_config.get(
+                "path_drop_full_ratio", self.data_config.path_drop_full_ratio
+            ),
         )
 
         self._cam_key_mapping = KEY_MAPPINGS[self.hf_dataset.meta.repo_id]["camera"]
@@ -287,21 +291,21 @@ class PreprocessedDataset(Dataset[T_co]):
         action = data[self._action_key_mapping]
         frame_index = data["frame_index"]
         instruction_info = {"instruction": data["task"]}
-        
+
         # 新增标记 If available, attach subtask label for auxiliary subtask-generation training
-        if self._subtask_id2name is not None and 'subtask_index' in data:
-            sid = int(data['subtask_index'])
-            name = self._subtask_id2name.get(sid, '')
+        if self._subtask_id2name is not None and "subtask_index" in data:
+            sid = int(data["subtask_index"])
+            name = self._subtask_id2name.get(sid, "")
             if name:
-                instruction_info['subtask_generation'] = name
-        
+                instruction_info["subtask_generation"] = name
+
         # # 新增标记 Optionally replace base instruction with high-level task text 不用替换啊！！好大的坑
         # if self._high_level_id2text is not None and "task_index_high_level" in data:
-            
-        #     hid = int(data['task_index_high_level'])
-        #     htxt = self._high_level_id2text.get(hid, '')
+        #
+        #     hid = int(data["task_index_high_level"])
+        #     htxt = self._high_level_id2text.get(hid, "")
         #     if htxt:
-        #         instruction_info['instruction'] = htxt
+        #         instruction_info["instruction"] = htxt
 
         # 新增标记: attach CoT prompt/answer (from tasks_high_level.parquet)
         if self._high_level_cot_map is not None and "task_index_high_level" in data:
@@ -337,7 +341,7 @@ class PreprocessedDataset(Dataset[T_co]):
                         )
                         instruction_info["vqa_answer"] = qa_item.get("answer", "")
                         instruction_info["vqa_type"] = qa_item.get("type", "")
-        
+
         generate_subtask_ratio = self.data_config.generate_subtask_ratio
         generate_vqa_ratio = self.data_config.generate_vqa_ratio
         generate_cot_ratio = self.data_config.generate_cot_ratio
@@ -351,12 +355,14 @@ class PreprocessedDataset(Dataset[T_co]):
             generate_subtask_ratio=generate_subtask_ratio,
             generate_vqa_ratio=generate_vqa_ratio,
             generate_cot_ratio=generate_cot_ratio,
+            if_vqa=self.data_config.if_vqa,
+            path_drop_full_ratio=self.data_config.path_drop_full_ratio,
         )
         text = process_grounding_points(
             complete_text, h, w, resize_h, resize_w, self.data_config.model_type
         )
         result = {
-            "image_inputs": image_inputs, 
+            "image_inputs": image_inputs,
             "text": text,
             "action": action, # [32,19]
             "agent_pos": agent_pos, # [19]

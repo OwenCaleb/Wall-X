@@ -468,7 +468,6 @@ def get_task_instruction(
 
     return task_instruction
 
-
 def get_wallx_normal_text(
     instruction_info: Dict[str, Any],
     action_chunk_size: int,
@@ -478,28 +477,20 @@ def get_wallx_normal_text(
     generate_subtask_ratio: float = 0.0,
     generate_vqa_ratio: float = 0.0,
     generate_cot_ratio: float = 0.0,
+    if_vqa: int = 0,
+    path_drop_full_ratio: float = 0.0,
 ) -> Tuple[str, bool]:
     """Construct complete multimodal prompt text for Wall-X model.
 
-    Formats input using special tokens including:
-    - System message
-    - User observations (with image placeholders)
-    - Task instructions
-    - Proprioception prompts
-    - Assistant responses (with action tokens)
-
-    Args:
-        instruction_info: Dictionary containing instruction components
-        action_chunk_size: Number of action tokens to generate
-        frame_idx: Current frame index
-        priority_order: Priority order for instruction sampling
-        cam_mapping: Camera name mapping dictionary
-        generate_subtask_ratio: Probability of generating subtask instead of actions
-        generate_vqa_ratio: Probability of generating VQA instead of actions
-        generate_cot_ratio: Probability of generating CoT instead of actions
-
     Returns:
-        Tuple of (formatted_prompt_text, is_subtask_generation)
+        Tuple of (formatted_prompt_text, is_text_generation)
+        is_text_generation=True for VQA/CoT/Subtask samples, False for Action samples.
+
+    Notes:
+        - Uses explicit tags: <Instruction>, <Thought>, <Subtask>
+        - CoT branch outputs both <Thought> and <Subtask>
+        - Action branch supports path-drop: direct vs full (with optional Thought/Subtask conditioning)
+        - if_vqa==1 forces VQA-only; if no VQA exists, returns ("", False) for caller to skip.
     """
     # Special tokens for formatting
     role_start_symbol = "<|im_start|>"
@@ -511,6 +502,67 @@ def get_wallx_normal_text(
     action_symbol = "<|action|>"
     action_fast_symbol = "<|action_fast|>"
 
+    instruction_tag = "<Instruction>"
+    instruction_end_tag = "</Instruction>"
+    thought_tag = "<Thought>"
+    thought_end_tag = "</Thought>"
+    subtask_tag = "<Subtask>"
+    subtask_end_tag = "</Subtask>"
+
+    def _wrap_tag(tag: str, end_tag: str, content: str) -> str:
+        return f"{tag}{content}{end_tag}"
+
+    def _append_if_nonempty(parts: list, tag: str, end_tag: str, s: Any) -> None:
+        s = "" if s is None else str(s)
+        s = s.strip()
+        if s:
+            parts.append(_wrap_tag(tag, end_tag, s))
+
+    def _get_subtask_text(frame_info: Dict[str, Any]) -> str:
+        for k in ("subtask_generation", "distribute"):
+            v = frame_info.get(k, "")
+            if v:
+                return str(v)
+        return ""
+
+    def _pick_vqa(frame_info: Dict[str, Any]) -> Tuple[str, str, str]:
+        """Return (question, answer, type). Supports str, list[str], list[dict]."""
+        q = frame_info.get("vqa_question", "")
+        a = frame_info.get("vqa_answer", "")
+        t = frame_info.get("vqa_type", "")
+
+        # list[dict] case: [{"question":..., "answer":..., "type":...}, ...]
+        if isinstance(q, (list, tuple)) and q and isinstance(q[0], dict):
+            item = random.choice(q)
+            qq = str(item.get("question", "")).strip()
+            aa = str(item.get("answer", "")).strip()
+            tt = str(item.get("type", "")).strip()
+            return qq, aa, tt
+
+        # list[str] case for question and maybe answer/type aligned
+        if isinstance(q, (list, tuple)):
+            qs = [str(x).strip() for x in q if str(x).strip()]
+            if not qs:
+                return "", "", ""
+            idx = random.randrange(len(qs))
+
+            # answer aligned
+            if isinstance(a, (list, tuple)) and len(a) == len(q):
+                aa = str(a[idx]).strip()
+            else:
+                aa = str(a).strip()
+
+            # type aligned
+            if isinstance(t, (list, tuple)) and len(t) == len(q):
+                tt = str(t[idx]).strip()
+            else:
+                tt = str(t).strip()
+
+            return qs[idx], aa, tt
+
+        # scalar str fallback
+        return str(q).strip(), str(a).strip(), str(t).strip()
+
     # System prologue
     prologue = (
         f"{role_start_symbol}system\nYou are a helpful assistant.{role_end_symbol}\n"
@@ -521,86 +573,111 @@ def get_wallx_normal_text(
     if cam_mapping:
         for _, cam_name in cam_mapping.items():
             view_name = CAMERA_NAME_MAPPING.get(cam_name, cam_name)
-            user_request += f" {view_name}: {vision_start_symbol}{image_pad_symbol}{vision_end_symbol}"
+            user_request += (
+                f" {view_name}: {vision_start_symbol}{image_pad_symbol}{vision_end_symbol}"
+            )
     user_request += "\nInstruction:"
 
-    # Get frame-specific instruction 由于subtask数据集组织不同，这里并无作用
+    # Get frame-specific instruction
     frame_instruction_info, _ = get_frame_instruction(
         instruction_info, frame_idx=frame_idx
     )
 
-    generate_subtask = False
-    priority_keys = ["subtask_generation", "distribute"] #在控制流层面是等价的 比如 "distribute": true
+    generate_text = False
 
-    vqa_question = frame_instruction_info.get("vqa_question", "")
-    vqa_answer = frame_instruction_info.get("vqa_answer", "")
-    vqa_type = frame_instruction_info.get("vqa_type", "")
-    cot_question = frame_instruction_info.get("cot_question", "")
-    cot_answer = frame_instruction_info.get("cot_answer", "")
-    cot_instruction = frame_instruction_info.get("cot_instruction", "")
+    # Pre-fetch common fields
+    subtask_text = _get_subtask_text(frame_instruction_info)
+    cot_answer = str(frame_instruction_info.get("cot_answer", "") or "").strip()
+    cot_instruction = str(frame_instruction_info.get("cot_instruction", "") or "").strip()
 
-    # Decide whether to generate subtask or actions 也许需要增加分支，一定概率走COT（对应的prompt不一样），同理也有一条分支走QA,但是由于QA数据的密度小，因此单独增加一个mode，也采用X2RDataProcessingConfig里增加'if_vqa'字段，然后作为参数传进来；1则全部走QA数据pieline,0则走其他pipeline;且对于多个QA随机抽取一个
-    if (
-        vqa_question
-        and vqa_answer
-        and random.random() < generate_vqa_ratio
-    ):
-        instruction = frame_instruction_info.get("instruction", "")
+    vqa_question, vqa_answer, vqa_type = _pick_vqa(frame_instruction_info)
+
+    # Helper: build user message with instruction tag
+    def _build_user_with_instruction(instr: str, extra: str = "") -> str:
+        instr = (instr or "").strip()
+        return (
+            f"{user_request} {_wrap_tag(instruction_tag, instruction_end_tag, instr)}"
+            f"{extra}{role_end_symbol}\n"
+        )
+
+    # Decide whether to generate VQA / CoT / Subtask / Action
+    if if_vqa == 1:
+        if not (vqa_question and vqa_answer):
+            return "", False  # caller should skip
+        instr = str(frame_instruction_info.get("instruction", "") or "").strip()
         vqa_type_text = f" ({vqa_type})" if vqa_type else ""
-        text_prompt = "\nAnswer the question based on the observation.\n"
         user_message = (
-            f"{user_request} {instruction}\n"
-            f"Question{vqa_type_text}: {vqa_question}{text_prompt}{role_end_symbol}\n"
+            f"{user_request} {instr}\n"
+            f"Question{vqa_type_text}: {vqa_question}\n{role_end_symbol}\n"
         )
         assistant_output = (
             f"{role_start_symbol}assistant\n{vqa_answer}\n{role_end_symbol}\n"
         )
-        generate_subtask = True
-    elif (
-        cot_question
-        and cot_answer
-        and random.random() < generate_cot_ratio
-    ):
-        instruction = frame_instruction_info.get("instruction", "")
-        text_prompt = "\nPlease think step by step and answer in cot.\n"
+        generate_text = True
+
+    elif vqa_question and vqa_answer and random.random() < generate_vqa_ratio:
+        instr = str(frame_instruction_info.get("instruction", "") or "").strip()
+        vqa_type_text = f" ({vqa_type})" if vqa_type else ""
         user_message = (
-            f"{user_request} {instruction}\n"
-            f"What should do next? {text_prompt}{role_end_symbol}\n"
+            f"{user_request} {instr}\n"
+            f"Question{vqa_type_text}: {vqa_question}\n{role_end_symbol}\n"
         )
         assistant_output = (
-            f"{role_start_symbol}assistant\n{cot_answer}\n{role_end_symbol}\n"
+            f"{role_start_symbol}assistant\n{vqa_answer}\n{role_end_symbol}\n"
         )
-        generate_subtask = True
-    elif (
-        bool(set(frame_instruction_info.keys()) & set(priority_keys))
-        and random.random() < generate_subtask_ratio
-    ):
-        # Generate subtask 
-        instruction = frame_instruction_info.get("instruction", "")
-        text_prompt = "\nPredict the next action in language.\n"
-        user_message = f"{user_request} {instruction}{text_prompt}{role_end_symbol}\n"
+        generate_text = True
 
-        # Find output instruction from priority keys
-        for key in priority_keys:
-            if key in frame_instruction_info:
-                output_instruction = frame_instruction_info[key]
-                break
-
+    elif cot_answer and subtask_text and random.random() < generate_cot_ratio:
+        # CoT text supervision: must output both Thought + Subtask
+        instr = cot_instruction or str(frame_instruction_info.get("instruction", "") or "").strip()
+        user_message = _build_user_with_instruction(instr)
         assistant_output = (
-            f"{role_start_symbol}assistant\n{output_instruction}\n{role_end_symbol}\n"
+            f"{role_start_symbol}assistant\n"
+            f"{_wrap_tag(thought_tag, thought_end_tag, cot_answer)}\n"
+            f"{_wrap_tag(subtask_tag, subtask_end_tag, subtask_text)}\n"
+            f"{role_end_symbol}\n"
         )
-        generate_subtask = True
+        generate_text = True
+
+    elif subtask_text and random.random() < generate_subtask_ratio:
+        # Subtask-only text supervision
+        instr = str(frame_instruction_info.get("instruction", "") or "").strip()
+        user_message = _build_user_with_instruction(instr)
+        assistant_output = (
+            f"{role_start_symbol}assistant\n"
+            f"{_wrap_tag(subtask_tag, subtask_end_tag, subtask_text)}\n"
+            f"{role_end_symbol}\n"
+        )
+        generate_text = True
+
     else:
-        # Generate actions
-        instruction = get_task_instruction(
-            frame_instruction_info, priority_order=priority_order
-        ) # 似乎如果有subtask是subtask instruction
-        text_prompt = f"\nPredict the next action in robot action.\nProprioception: {propri_symbol}\n"
-        user_message = f"{user_request} {instruction}{text_prompt}{role_end_symbol}\n"
-        assistant_output = f"{role_start_symbol}assistant\n{action_fast_symbol}{role_end_symbol}\n{action_symbol * action_chunk_size}"
+        # Action generation with path-drop conditioning
+        instr = str(
+            get_task_instruction(frame_instruction_info, priority_order=priority_order)
+        ).strip()
+
+        want_full = random.random() < path_drop_full_ratio
+        has_mid = bool(subtask_text or cot_answer)
+        use_full = want_full and has_mid
+
+        input_parts = [_wrap_tag(instruction_tag, instruction_end_tag, instr)]
+        if use_full:
+            _append_if_nonempty(input_parts, thought_tag, thought_end_tag, cot_answer)
+            _append_if_nonempty(input_parts, subtask_tag, subtask_end_tag, subtask_text)
+
+        text_prompt = f"\nProprioception: {propri_symbol}\n"
+        user_message = (
+            f"{user_request} " + "\n".join(input_parts) + text_prompt + f"{role_end_symbol}\n"
+        )
+        assistant_output = (
+            f"{role_start_symbol}assistant\n{action_fast_symbol}{role_end_symbol}\n"
+            f"{action_symbol * action_chunk_size}"
+        )
+        generate_text = False
 
     complete_text = prologue + user_message + assistant_output
-    return complete_text, generate_subtask
+    return complete_text, generate_text
+
 
 
 def get_action_tokens(
