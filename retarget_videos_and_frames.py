@@ -4,8 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import os
-import shutil
 import subprocess
 from pathlib import Path
 from typing import List, Tuple
@@ -15,8 +13,6 @@ from typing import List, Tuple
 # CONFIG (all tunables here)
 # =========================
 DEFAULT_CHUNK_DIR = "videos/chunk-000"
-DEFAULT_VIDEO_RETARGET_DIR = "video_retarget_right"
-DEFAULT_FRAME_RETARGET_DIR = "frame_retarget_right"
 
 DEFAULT_STRIDE = 1
 DEFAULT_HZ = 10.0
@@ -64,17 +60,12 @@ def ensure_dir(p: Path) -> None:
 
 
 def transcode_to_h264(src: Path, dst: Path, overwrite: bool) -> None:
-    """
-    Transcode src video to H.264 MP4 at dst.
-    """
+    """Transcode src video to H.264 MP4 at dst."""
     ensure_dir(dst.parent)
-
     if dst.exists() and not overwrite:
         return
 
-    # -y to overwrite, else ffmpeg will prompt and hang
     overwrite_flag = "-y" if overwrite else "-n"
-
     cmd = [
         "ffmpeg",
         overwrite_flag,
@@ -86,13 +77,11 @@ def transcode_to_h264(src: Path, dst: Path, overwrite: bool) -> None:
         "-crf", str(H264_CRF),
         "-pix_fmt", H264_PIX_FMT,
     ]
-
     if not H264_AUDIO:
         cmd += ["-an"]
     else:
         cmd += ["-c:a", "aac", "-b:a", "128k"]
 
-    # Ensure MP4 is streamable and more compatible
     cmd += ["-movflags", "+faststart", str(dst)]
 
     code, out = _run(cmd)
@@ -103,7 +92,6 @@ def transcode_to_h264(src: Path, dst: Path, overwrite: bool) -> None:
 def extract_frames_ffmpeg(video_path: Path, out_dir: Path, stride: int, overwrite: bool) -> None:
     ensure_dir(out_dir)
     if overwrite:
-        # remove old jpgs only
         for f in out_dir.glob("*.jpg"):
             f.unlink()
 
@@ -133,39 +121,6 @@ def extract_frames_ffmpeg(video_path: Path, out_dir: Path, stride: int, overwrit
         f.rename(target)
 
 
-def extract_frames_opencv(video_path: Path, out_dir: Path, stride: int, overwrite: bool) -> None:
-    ensure_dir(out_dir)
-    if overwrite:
-        for f in out_dir.glob("*.jpg"):
-            f.unlink()
-
-    try:
-        import cv2
-    except ImportError as e:
-        raise RuntimeError(
-            "OpenCV not installed (and ffmpeg not used for frames).\n"
-            "Install opencv-python:\n  pip install opencv-python\n"
-        ) from e
-
-    cap = cv2.VideoCapture(str(video_path))
-    if not cap.isOpened():
-        raise RuntimeError(f"Failed to open video: {video_path}")
-
-    frame_idx = 0
-    saved = 0
-    while True:
-        ok, frame = cap.read()
-        if not ok:
-            break
-        if frame_idx % stride == 0:
-            out_path = out_dir / f"{saved:0{FRAME_PAD}d}.jpg"
-            cv2.imwrite(str(out_path), frame)
-            saved += 1
-        frame_idx += 1
-
-    cap.release()
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", required=True, help="Dataset root path")
@@ -174,58 +129,85 @@ def main():
     ap.add_argument("--Hz", type=float, default=DEFAULT_HZ, help="Nominal video Hz (default 10). Kept for compatibility.")
     ap.add_argument("--overwrite_video", action="store_true", help="Overwrite existing retargeted H.264 video")
     ap.add_argument("--overwrite_frames", action="store_true", help="Overwrite existing extracted frames")
+    ap.add_argument(
+        "--out_tag",
+        default="right",
+        help="Suffix tag for output dirs, e.g. right/head/left. "
+            "Outputs: video_retarget_{tag}, frame_retarget_{tag}",
+    )
+    # NEW: control switches
+    ap.add_argument("--do_video", action="store_true", help="Do H.264 transcoding")
+    ap.add_argument("--do_frames", action="store_true", help="Do frame extraction")
+    ap.add_argument(
+        "--use_video_for_frames",
+        action="store_true",
+        help="If enabled, extract frames from retargeted H.264 video (when available) instead of original.",
+    )
+
     args = ap.parse_args()
+
+    # Default behavior: if neither flag set, do both (backward compatible)
+    do_video = args.do_video or (not args.do_video and not args.do_frames)
+    do_frames = args.do_frames or (not args.do_video and not args.do_frames)
 
     root = Path(args.root).resolve()
     in_dir = root / DEFAULT_CHUNK_DIR / args.camera_view
 
-    if not has_ffmpeg():
-        raise RuntimeError("ffmpeg is required for H.264 transcoding but not found in PATH.")
+    if (do_video or do_frames) and not has_ffmpeg():
+        raise RuntimeError("ffmpeg is required but not found in PATH.")
 
     vids = list_episode_videos(in_dir)
     if not vids:
         raise RuntimeError(f"No videos found under: {in_dir}")
 
-    out_video_root = root / DEFAULT_VIDEO_RETARGET_DIR
-    out_frame_root = root / DEFAULT_FRAME_RETARGET_DIR
-    ensure_dir(out_video_root)
-    ensure_dir(out_frame_root)
+    out_video_root = root / f"video_retarget_{args.out_tag}"
+    out_frame_root = root / f"frame_retarget_{args.out_tag}"
+    if do_video:
+        ensure_dir(out_video_root)
+    if do_frames:
+        ensure_dir(out_frame_root)
 
     print(f"[INFO] root={root}")
     print(f"[INFO] input_dir={in_dir}")
     print(f"[INFO] videos={len(vids)}")
     print(f"[INFO] stride={args.stride}  Hz={args.Hz}")
-    print(f"[INFO] video_retarget={out_video_root}")
-    print(f"[INFO] frame_retarget={out_frame_root}")
-    print(f"[INFO] transcode=H.264 libx264 preset={H264_PRESET} crf={H264_CRF} pix_fmt={H264_PIX_FMT}")
-
-    # For frames: use ffmpeg (already available); OpenCV fallback kept but unlikely needed.
-    use_ffmpeg_for_frames = True
+    print(f"[INFO] do_video={do_video}  do_frames={do_frames}  use_video_for_frames={args.use_video_for_frames}")
+    if do_video:
+        print(f"[INFO] video_retarget={out_video_root}")
+        print(f"[INFO] transcode=H.264 libx264 preset={H264_PRESET} crf={H264_CRF} pix_fmt={H264_PIX_FMT}")
+    if do_frames:
+        print(f"[INFO] frame_retarget={out_frame_root}")
 
     for vp in vids:
         ep = parse_episode_index(vp)
         sample_name = f"sample_{ep:0{SAMPLE_PAD}d}"
 
-        # 1) transcode video to H.264
+        # Paths
         sample_video_dir = out_video_root / sample_name
         dst_video = sample_video_dir / f"Frame_{ep:0{FRAME_PAD}d}{EPISODE_EXT}"
-        transcode_to_h264(vp, dst_video, overwrite=args.overwrite_video)
-
-        # 2) extract frames (keep as before)
         sample_frame_dir = out_frame_root / sample_name
-        # If already has jpgs and not overwriting, skip
-        if sample_frame_dir.exists() and any(sample_frame_dir.glob("*.jpg")) and not args.overwrite_frames:
-            print(f"[SKIP] frames exist: {sample_frame_dir}")
-        else:
-            if args.overwrite_frames and sample_frame_dir.exists():
-                # keep folder, clear inside inside extractor
-                pass
-            if use_ffmpeg_for_frames:
-                extract_frames_ffmpeg(vp, sample_frame_dir, args.stride, overwrite=args.overwrite_frames)
-            else:
-                extract_frames_opencv(vp, sample_frame_dir, args.stride, overwrite=args.overwrite_frames)
 
-        print(f"[OK] {sample_name}: h264 -> {dst_video.name}, frames -> {sample_frame_dir}")
+        # 1) video
+        if do_video:
+            transcode_to_h264(vp, dst_video, overwrite=args.overwrite_video)
+
+        # 2) frames
+        if do_frames:
+            # If already has jpgs and not overwriting, skip
+            if sample_frame_dir.exists() and any(sample_frame_dir.glob("*.jpg")) and not args.overwrite_frames:
+                print(f"[SKIP] frames exist: {sample_frame_dir}")
+            else:
+                # choose source for frame extraction
+                frame_src = dst_video if (args.use_video_for_frames and dst_video.exists()) else vp
+                extract_frames_ffmpeg(frame_src, sample_frame_dir, args.stride, overwrite=args.overwrite_frames)
+
+        # log
+        msg = f"[OK] {sample_name}:"
+        if do_video:
+            msg += f" h264 -> {dst_video.name};"
+        if do_frames:
+            msg += f" frames -> {sample_frame_dir}"
+        print(msg)
 
     print("[DONE]")
 
@@ -233,13 +215,38 @@ def main():
 if __name__ == "__main__":
     main()
 
-'''
+"""
+Examples:
+
+observation.images.head_realsense_color
+observation.images.left_hand_realsense_color
+observation.images.right_hand_realsense_color
+
+# default (backward compatible): do both video + frames
 python retarget_videos_and_frames.py \
   --root /mnt/nas_ssd/workspace/wenboli/projects/Wall-X/wallx/data/g1_new/lerobot/Teleop_251103_Sort_Anonymous_10Hz_old \
   --camera_view observation.images.right_hand_realsense_color \
   --stride 100
-  
-observation.images.head_realsense_color
-observation.images.left_hand_realsense_color
-observation.images.right_hand_realsense_color
-'''
+
+# only transcode video
+python retarget_videos_and_frames.py \
+  --root /path/to/ds \
+  --camera_view observation.images.right_hand_realsense_color \
+  --do_video
+
+# only extract frames (from original video)
+python retarget_videos_and_frames.py \
+  --root /mnt/nas_ssd/workspace/wenboli/projects/Wall-X/wallx/data/g1_new/lerobot/Teleop_251103_Sort_Anonymous_10Hz_old \
+  --camera_view observation.images.head_realsense_color \
+  --do_frames \
+  --stride 1 \
+  --out_tag head
+
+# extract frames from retargeted H.264 if exists
+python retarget_videos_and_frames.py \
+  --root /path/to/ds \
+  --camera_view observation.images.right_hand_realsense_color \
+  --do_video --do_frames \
+  --use_video_for_frames \
+  --stride 100
+"""
