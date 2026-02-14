@@ -606,9 +606,13 @@ def get_wallx_normal_text(
             return "", False  # caller should skip
         instr = str(frame_instruction_info.get("instruction", "") or "").strip()
         vqa_type_text = f" ({vqa_type})" if vqa_type else ""
+        text_prompt = "\nAnswer the question based on the observation.\n"
         user_message = (
-            f"{user_request} {instr}\n"
-            f"Question{vqa_type_text}: {vqa_question}\n{role_end_symbol}\n"
+            f"{user_request} "
+            f"{instr}"
+            # f"{_wrap_tag(instruction_tag, instruction_end_tag, instr)}"
+            f"Question{vqa_type_text}: {vqa_question}"
+            f"{text_prompt}{role_end_symbol}\n"
         )
         assistant_output = (
             f"{role_start_symbol}assistant\n{vqa_answer}\n{role_end_symbol}\n"
@@ -618,9 +622,13 @@ def get_wallx_normal_text(
     elif vqa_question and vqa_answer and random.random() < generate_vqa_ratio:
         instr = str(frame_instruction_info.get("instruction", "") or "").strip()
         vqa_type_text = f" ({vqa_type})" if vqa_type else ""
+        text_prompt = "\nAnswer the question based on the observation.\n"
         user_message = (
-            f"{user_request} {instr}\n"
-            f"Question{vqa_type_text}: {vqa_question}\n{role_end_symbol}\n"
+            f"{user_request} "
+            f"{instr}"
+            # f"{_wrap_tag(instruction_tag, instruction_end_tag, instr)}"
+            f"Question{vqa_type_text}: {vqa_question}"
+            f"{text_prompt}{role_end_symbol}\n"
         )
         assistant_output = (
             f"{role_start_symbol}assistant\n{vqa_answer}\n{role_end_symbol}\n"
@@ -630,7 +638,17 @@ def get_wallx_normal_text(
     elif cot_answer and subtask_text and random.random() < generate_cot_ratio:
         # CoT text supervision: must output both Thought + Subtask
         instr = cot_instruction or str(frame_instruction_info.get("instruction", "") or "").strip()
-        user_message = _build_user_with_instruction(instr)
+
+        text_prompt = (
+            "Output <Thought> and <Subtask>.\n"
+        )
+        user_message = (
+            f"{user_request} "
+            f"{instr}"
+            # f"{_wrap_tag(instruction_tag, instruction_end_tag, instr)}"
+            f"{text_prompt}{role_end_symbol}\n"
+        )
+
         assistant_output = (
             f"{role_start_symbol}assistant\n"
             f"{_wrap_tag(thought_tag, thought_end_tag, cot_answer)}\n"
@@ -642,7 +660,15 @@ def get_wallx_normal_text(
     elif subtask_text and random.random() < generate_subtask_ratio:
         # Subtask-only text supervision
         instr = str(frame_instruction_info.get("instruction", "") or "").strip()
-        user_message = _build_user_with_instruction(instr)
+
+        text_prompt = "Output <Subtask>.\n"
+        user_message = (
+            f"{user_request} "
+            # f"{_wrap_tag(instruction_tag, instruction_end_tag, instr)}"
+            f"{instr}"
+            f"{text_prompt}{role_end_symbol}\n"
+        )
+
         assistant_output = (
             f"{role_start_symbol}assistant\n"
             f"{_wrap_tag(subtask_tag, subtask_end_tag, subtask_text)}\n"
@@ -662,15 +688,10 @@ def get_wallx_normal_text(
         # if use_full:
         #     _append_if_nonempty(input_parts, thought_tag, thought_end_tag, cot_answer)
         #     _append_if_nonempty(input_parts, subtask_tag, subtask_end_tag, subtask_text)
+        text_prompt = f"\nPredict the next action in robot action.\nProprioception: {propri_symbol}\n"
+        user_message = f"{user_request} {instr}{text_prompt}{role_end_symbol}\n"
+        assistant_output = f"{role_start_symbol}assistant\n{action_fast_symbol}{role_end_symbol}\n{action_symbol * action_chunk_size}"
 
-        text_prompt = f"\nProprioception: {propri_symbol}\n"
-        user_message = (
-            f"{user_request} " + "\n" + text_prompt + f"{role_end_symbol}\n"
-        )
-        assistant_output = (
-            f"{role_start_symbol}assistant\n{action_fast_symbol}{role_end_symbol}\n"
-            f"{action_symbol * action_chunk_size}"
-        )
         generate_text = False
 
     complete_text = prologue + user_message + assistant_output
