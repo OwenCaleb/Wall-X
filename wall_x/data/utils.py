@@ -652,22 +652,20 @@ def get_wallx_normal_text(
 
     else:
         # Action generation with path-drop conditioning
-        instr = str(
-            get_task_instruction(frame_instruction_info, priority_order=priority_order)
-        ).strip()
+        instr = str(frame_instruction_info.get("instruction", "") or "").strip()
 
-        want_full = random.random() < path_drop_full_ratio
-        has_mid = bool(subtask_text or cot_answer)
-        use_full = want_full and has_mid
+        # want_full = random.random() < path_drop_full_ratio
+        # has_mid = bool(subtask_text or cot_answer)
+        # use_full = want_full and has_mid
 
-        input_parts = [_wrap_tag(instruction_tag, instruction_end_tag, instr)]
-        if use_full:
-            _append_if_nonempty(input_parts, thought_tag, thought_end_tag, cot_answer)
-            _append_if_nonempty(input_parts, subtask_tag, subtask_end_tag, subtask_text)
+        # input_parts = [_wrap_tag(instruction_tag, instruction_end_tag, instr)]
+        # if use_full:
+        #     _append_if_nonempty(input_parts, thought_tag, thought_end_tag, cot_answer)
+        #     _append_if_nonempty(input_parts, subtask_tag, subtask_end_tag, subtask_text)
 
         text_prompt = f"\nProprioception: {propri_symbol}\n"
         user_message = (
-            f"{user_request} " + "\n".join(input_parts) + text_prompt + f"{role_end_symbol}\n"
+            f"{user_request} " + "\n" + text_prompt + f"{role_end_symbol}\n"
         )
         assistant_output = (
             f"{role_start_symbol}assistant\n{action_fast_symbol}{role_end_symbol}\n"
