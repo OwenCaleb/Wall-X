@@ -723,7 +723,9 @@ def load_lerobot_data(
 
     batch_size = config.get("batch_size_per_gpu", 8)
     all_episodes = np.arange(episodes_num).tolist()
-    configured_episodes = lerobot_config.get("episodes", None)
+    configured_episodes = dataload_config.get("episodes", None)
+    if configured_episodes is None:
+        configured_episodes = lerobot_config.get("episodes", None)
 
     if configured_episodes is not None:
         if isinstance(configured_episodes, int):
