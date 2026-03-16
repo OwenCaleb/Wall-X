@@ -678,7 +678,7 @@ def get_wallx_normal_text(
 
     else:
         # Action generation with path-drop conditioning
-        instr = str(frame_instruction_info.get("instruction", "") or "").strip()
+        instr = str(frame_instruction_info.get("subtask_generation", "") or "").strip()
 
         # want_full = random.random() < path_drop_full_ratio
         # has_mid = bool(subtask_text or cot_answer)
