@@ -722,11 +722,27 @@ def load_lerobot_data(
     ) # len = 2
 
     batch_size = config.get("batch_size_per_gpu", 8)
-    episodes = np.arange(episodes_num).tolist()
+    all_episodes = np.arange(episodes_num).tolist()
+    configured_episodes = lerobot_config.get("episodes", None)
 
-    train_test_split = dataload_config.get("train_test_split", 0.95)
-    train_episodes = episodes[: int(episodes_num * train_test_split)]
-    test_episodes = episodes[int(episodes_num * train_test_split) :]
+    if configured_episodes is not None:
+        if isinstance(configured_episodes, int):
+            train_episodes = [int(configured_episodes)]
+        else:
+            train_episodes = [int(ep) for ep in configured_episodes]
+
+        invalid_episodes = [
+            ep for ep in train_episodes if ep < 0 or ep >= episodes_num
+        ]
+        assert (
+            len(invalid_episodes) == 0
+        ), f"Invalid episode ids: {invalid_episodes}, valid range is [0, {episodes_num - 1}]"
+
+        test_episodes = [ep for ep in all_episodes if ep not in set(train_episodes)]
+    else:
+        train_test_split = dataload_config.get("train_test_split", 0.95)
+        train_episodes = all_episodes[: int(episodes_num * train_test_split)]
+        test_episodes = all_episodes[int(episodes_num * train_test_split) :]
     
     if modality_json_path is not None and len(str(modality_json_path)) > 0:
         from wall_x.data.modality_wrapper import ModalityAwareLeRobotDataset

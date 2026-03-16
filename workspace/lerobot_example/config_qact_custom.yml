@@ -77,10 +77,10 @@ data:
   generate_cot_ratio: 0
   generate_subtask_ratio: 0
 
-
-  # generate_vqa_ratio: 0.25   # 有就一定走
-  # generate_cot_ratio: 0.33
-  # generate_subtask_ratio: 0.5
+  episodes:[0,1]
+  generate_vqa_ratio: 0.25   # 有就一定走
+  generate_cot_ratio: 0.33
+  generate_subtask_ratio: 0.5
   if_vqa: 0               # 1: VQA-only; missing VQA will be skipped
   path_drop_full_ratio: 0.5
 
