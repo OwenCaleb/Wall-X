@@ -213,7 +213,7 @@ def compute_action_normalizer(
 def main() -> None:
 
     repo_id = "g1custom"  # your dataset name
-    data_root_path = "/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/wallx/data/g1_new/lerobot/Teleop_251103_Sort_Anonymous_10Hz_refactorized"
+    data_root_path = "/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/wallx/data/g1/lerobot/Teleop_251024_FruitCar_Anonymous_10Hz/Teleop_251024_FruitCar_Anonymous_10Hz_annotated"
     output_stats_dir = "/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/norm_stats"
     trajectory_keys = {  # your dataset keys
         "action": {

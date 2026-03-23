@@ -52,7 +52,7 @@ class ModalityAwareLeRobotDataset(LeRobotDataset):
         **kwargs,
     ):
         super().__init__(repo_id,root,episodes,delta_timestamps=delta_timestamps,video_backend=video_backend, **kwargs)
-
+        self.global_to_local_ep_idx = {int(ep): i for i, ep in enumerate(episodes)}
         self.modality_path = Path(modality_json)
         self.action_horizon = len(delta_timestamps[next(iter(delta_timestamps))])
 
@@ -112,9 +112,22 @@ class ModalityAwareLeRobotDataset(LeRobotDataset):
         H = self.action_horizon
 
         # Need episode range to clamp within episode
-        ep_idx = int(item["episode_index"].item()) if isinstance(item["episode_index"], torch.Tensor) else int(item["episode_index"])
-        ep_start = int(self.episode_data_index["from"][ep_idx].item())
-        ep_end = int(self.episode_data_index["to"][ep_idx].item())
+        # ep_idx = int(item["episode_index"].item()) if isinstance(item["episode_index"], torch.Tensor) else int(item["episode_index"])
+        # ep_start = int(self.episode_data_index["from"][ep_idx].item())
+        # ep_end = int(self.episode_data_index["to"][ep_idx].item())
+        
+        
+        global_ep_idx = (
+        int(item["episode_index"].item())
+        if isinstance(item["episode_index"], torch.Tensor)
+            else int(item["episode_index"])
+        )
+        local_ep_idx = self.global_to_local_ep_idx[global_ep_idx]
+
+        ep_start = int(self.episode_data_index["from"][local_ep_idx].item())
+        ep_end = int(self.episode_data_index["to"][local_ep_idx].item())
+        
+        
         indices = [min(max(idx + t, ep_start), ep_end - 1) for t in range(H)]
 
         parts: List[torch.Tensor] = []

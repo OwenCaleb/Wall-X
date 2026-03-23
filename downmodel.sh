@@ -6,17 +6,17 @@ set -euo pipefail
 # =========================
 # CONFIG
 # =========================
-REPO_ID="Qwen/Qwen3-VL-32B-Instruct-FP8"
+REPO_ID="Qwen/Qwen3-VL-8B-Instruct"
 
 # Real storage location (large disk)
-REAL_DIR="/mnt/data/liwenbo_datas/models/qwen/Qwen3-VL-32B-Instruct-FP8"
+REAL_DIR="/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/wallx/models/qwen/Qwen3-VL-8B-Instruct"
 
 # Where starVLA expects the checkpoint directory (symlink target)
 # LINK_DIR="$HOME/projects/VLA/wall-x/Pretrained_models/wall-oss-flow"
 
 # (Recommended) Put HF cache on large disk so resume works well and avoids filling home disk. 放缓存以恢复
 # Comment these two lines if you don't want to change cache location.
-export HF_HOME="/mnt/data/liwenbo_datas/hf_home"
+export HF_HOME="/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/wallx/models"
 export HF_HUB_CACHE="$HF_HOME/hub"
 # =========================
 

@@ -5,7 +5,7 @@ import argparse
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 from wall_x.model.qwen2_5_based.modeling_qwen2_5_vl_act import Qwen2_5_VLMoEForAction
-from wall_x.data.load_lerobot_dataset import load_test_dataset, get_data_configs
+from wall_x.data.load_lerobot_dataset import load_test_dataset, get_data_configs,load_lerobot_data
 from wall_x.model.model_utils import register_normalizers
 import copy
 
@@ -31,14 +31,23 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--pred_horizon", type=int, default=32)
     parser.add_argument("--origin_action_dim", type=int, default=19)
+    parser.add_argument(
+        "--episodes",
+        type=str,
+        default="0,1,2,3",
+        help="Comma-separated episode ids, e.g. 0,1,2. If omitted, defaults to episode 0.",
+    )
     args = parser.parse_args()
 
     pred_horizon = args.pred_horizon
     origin_action_dim = args.origin_action_dim
+    episodes = None
+    if args.episodes:
+        episodes = [int(x.strip()) for x in args.episodes.split(",") if x.strip()]
     
 
     # get train config
-    model_path = "/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/wallx/models/wallx/wall-oss-flow-copy"
+    model_path = "/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/wallx/models/wallx/wall-oss-flow-v0.1-copy"
     # action_tokenizer_path = "/home/liwenbo/projects/VLA/wall-x/fast"
     save_dir = "/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/save_path_dir"
     path = "/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/workspace/lerobot_example/config_qact_custom.yml"
@@ -66,10 +75,15 @@ if __name__ == "__main__":
     dataload_config = get_data_configs(config["data"])
     lerobot_config = dataload_config.get("lerobot_config", {})
     dataset = load_test_dataset(
-        config, lerobot_config, normalizer_action, normalizer_propri, seed=42
+        config,
+        lerobot_config,
+        normalizer_action,
+        normalizer_propri,
+        seed=42,
+        episodes=episodes,
     )
-    dataloader = dataset.get_dataloader()
-    # dataloader = dataset.get_train_dataloader()
+    dataloader = dataset.get_dataloader() # 这个配合load_test_dataset，只载入第一个数据
+
 
     total_frames = len(dataloader)
 

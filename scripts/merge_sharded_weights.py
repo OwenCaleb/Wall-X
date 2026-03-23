@@ -6,8 +6,8 @@ Works around the StorageMeta compatibility issue between PyTorch versions.
 FSDP = 把模型“切成碎片”，并且在需要时再临时拼起来用。
 
 python scripts/merge_sharded_weights.py \
-/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/output_models/26210_flow_cot/9/pytorch_model_fsdp_0 \
-/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/output_models/26210_flow_cot/merge
+/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/output_models/26321_flow_01_act_multitask_level_C/9/pytorch_model_fsdp_0 \
+/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/output_models/26321_flow_01_act_multitask_level_C/9/merge
 
 """
 

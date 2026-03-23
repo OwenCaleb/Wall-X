@@ -913,6 +913,7 @@ def load_test_dataset(
     normalizer_propri,
     seed=42,
     episode=0,
+    episodes=None,
 ):
     """
     Load test dataset
@@ -920,6 +921,10 @@ def load_test_dataset(
     Args:
         config: Model configuration
         seed: Random seed for reproducibility (default: 42)
+
+    Args:
+        episode: Single episode id (backward compatible)
+        episodes: List of episode ids. If set, it has higher priority than `episode`.
 
     Returns:
         dataset: Test dataset
@@ -933,6 +938,7 @@ def load_test_dataset(
     root = lerobot_config.get("root", None)
     meta_info = LeRobotDatasetMetadata(repo_id, root=root)
     dataset_fps = meta_info.fps
+    episodes_num = meta_info.total_episodes
     dataload_config = get_data_configs(config["data"])
 
     norm_stats_path = config.get("norm_stats_path", None)
@@ -950,6 +956,22 @@ def load_test_dataset(
         action_horizon=horizon,
         modality_json_path=modality_json_path,
     )
+
+    if episodes is None:
+        selected_episodes = [int(episode)]
+    elif isinstance(episodes, int):
+        selected_episodes = [int(episodes)]
+    else:
+        selected_episodes = [int(ep) for ep in episodes]
+
+    if len(selected_episodes) == 0:
+        raise ValueError("`episodes` is empty. Please provide at least one episode id.")
+
+    invalid_episodes = [ep for ep in selected_episodes if ep < 0 or ep >= episodes_num]
+    if len(invalid_episodes) > 0:
+        raise ValueError(
+            f"Invalid episode ids: {invalid_episodes}, valid range is [0, {episodes_num - 1}]"
+        )
     
     if modality_json_path is not None and len(str(modality_json_path)) > 0:
         from wall_x.data.modality_wrapper import ModalityAwareLeRobotDataset
@@ -957,7 +979,7 @@ def load_test_dataset(
         dataset = ModalityAwareLeRobotDataset(
             repo_id=repo_id,
             root=root,
-            episodes=[episode],
+            episodes=selected_episodes,
             delta_timestamps=delta_timestamps,
             video_backend="pyav",
             modality_json=modality_json_path,
@@ -969,7 +991,7 @@ def load_test_dataset(
         dataset = LeRobotDataset(
             repo_id,
             root=root,
-            episodes=[episode],
+            episodes=selected_episodes,
             delta_timestamps=delta_timestamps,
             video_backend="pyav",
         )
