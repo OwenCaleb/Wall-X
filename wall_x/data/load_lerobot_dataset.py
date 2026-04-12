@@ -5,6 +5,7 @@ LeRobot Dataset Loader - Distributed Version
 import numpy as np
 import torch
 import random
+import bisect
 from torch.utils.data import DistributedSampler, random_split
 from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
 from typing import Protocol, SupportsIndex, TypeVar
@@ -169,6 +170,38 @@ class Dataset(Protocol[T_co]):
         raise NotImplementedError("Subclasses of Dataset should implement __len__.")
 
 
+class MultiSourceLeRobotDataset(Dataset[T_co]):
+    """Lightweight concat dataset that keeps source metadata for each sample."""
+
+    def __init__(self, datasets, source_infos):
+        assert len(datasets) == len(source_infos), "datasets and source_infos must align"
+        self.datasets = datasets
+        self.source_infos = source_infos
+        self.cumulative_sizes = np.cumsum([len(ds) for ds in datasets]).tolist()
+
+    def __len__(self) -> int:
+        return self.cumulative_sizes[-1] if len(self.cumulative_sizes) > 0 else 0
+
+    def __getitem__(self, index):
+        if index < 0:
+            index = len(self) + index
+        if index < 0 or index >= len(self):
+            raise IndexError("index out of range")
+
+        source_id = bisect.bisect_right(self.cumulative_sizes, index)
+        sample_start = 0 if source_id == 0 else self.cumulative_sizes[source_id - 1]
+        local_index = index - sample_start
+
+        data = self.datasets[source_id][local_index]
+        if isinstance(data, dict):
+            data = dict(data)
+            info = self.source_infos[source_id]
+            data["__source_id__"] = source_id
+            data["__repo_id__"] = info.get("repo_id", "")
+            data["__root__"] = info.get("root", None)
+        return data
+
+
 class PreprocessedDataset(Dataset[T_co]):
     def __init__(
         self,
@@ -178,6 +211,7 @@ class PreprocessedDataset(Dataset[T_co]):
         normalizer_action,
         normalizer_propri,
         lerobot_config,
+        lerobot_configs=None,
         seed=42,
         rank=0,
         world_size=1,
@@ -208,6 +242,11 @@ class PreprocessedDataset(Dataset[T_co]):
         self.normalizer_propri = normalizer_propri
         # self.norm_stats = norm_stats
         self.lerobot_config = lerobot_config
+        self.lerobot_configs = (
+            lerobot_configs
+            if lerobot_configs is not None
+            else ([lerobot_config] if lerobot_config is not None else [])
+        )
 
         self.data_config = X2RDataProcessingConfig()
         self.data_config.update(
@@ -235,21 +274,39 @@ class PreprocessedDataset(Dataset[T_co]):
             ),
         )
 
-        self._cam_key_mapping = KEY_MAPPINGS[self.hf_dataset.meta.repo_id]["camera"]
-        self._state_key_mapping = KEY_MAPPINGS[self.hf_dataset.meta.repo_id]["state"]
-        self._action_key_mapping = KEY_MAPPINGS[self.hf_dataset.meta.repo_id]["action"]
-        self._subtask_id2name, self._high_level_id2text = _load_meta_mappings(
-            self.lerobot_config.get("root", None)
-        )
-        self._high_level_cot_map = _load_high_level_cot_map(
-            self.lerobot_config.get("root", None)
-        )
-        self._vqa_map = _load_vqa_map(self.lerobot_config.get("root", None))
+        self._source_infos = getattr(self.hf_dataset, "source_infos", None)
+        if self._source_infos is None:
+            default_repo_id = self.lerobot_config.get("repo_id", self.hf_dataset.meta.repo_id)
+            default_root = self.lerobot_config.get("root", None)
+            self._source_infos = [{"repo_id": default_repo_id, "root": default_root}]
+
+        self._cam_key_mapping_by_source = {}
+        self._state_key_mapping_by_source = {}
+        self._action_key_mapping_by_source = {}
+        self._subtask_id2name_by_source = {}
+        self._high_level_id2text_by_source = {}
+        self._high_level_cot_map_by_source = {}
+        self._vqa_map_by_source = {}
+
+        for source_id, source_info in enumerate(self._source_infos):
+            repo_id = source_info["repo_id"]
+            root = source_info.get("root", None)
+
+            self._cam_key_mapping_by_source[source_id] = KEY_MAPPINGS[repo_id]["camera"]
+            self._state_key_mapping_by_source[source_id] = KEY_MAPPINGS[repo_id]["state"]
+            self._action_key_mapping_by_source[source_id] = KEY_MAPPINGS[repo_id]["action"]
+            subtask_map, high_level_map = _load_meta_mappings(root)
+            self._subtask_id2name_by_source[source_id] = subtask_map
+            self._high_level_id2text_by_source[source_id] = high_level_map
+            self._high_level_cot_map_by_source[source_id] = _load_high_level_cot_map(root)
+            self._vqa_map_by_source[source_id] = _load_vqa_map(root)
 
 
-    def _vision_preprocess(self, frames):
+    def _vision_preprocess(self, frames, cam_key_mapping):
         processed_frames = []
-        for key in self.hf_dataset.meta.camera_keys:
+        for key in cam_key_mapping.keys():
+            if key not in frames:
+                continue
             from PIL import Image
 
             current_obs = frames[key].clone().permute(1, 2, 0) # CHW -> HWC，因为 PIL / numpy 图像常用 HWC。
@@ -258,7 +315,7 @@ class PreprocessedDataset(Dataset[T_co]):
             orig_width, orig_height = img_pil.size
             # 2. Apply resolution constraints (if config is not -1) 保持纵横比，并把“较长边”缩放到 target_size。
             target_size = self.data_config.resolution.get(
-                self._cam_key_mapping[key], -1
+                cam_key_mapping[key], -1
             )
             if target_size != -1:
                 # Maintain aspect ratio logic
@@ -286,16 +343,42 @@ class PreprocessedDataset(Dataset[T_co]):
 
     def __getitem__(self, index):
         data = self._dataset[index]
-        image_inputs, h, w, resize_h, resize_w = self._vision_preprocess(data)
-        agent_pos = data[self._state_key_mapping]
-        action = data[self._action_key_mapping]
+        source_id = int(data.pop("__source_id__", 0)) if isinstance(data, dict) else 0
+        repo_id = data.pop("__repo_id__", None) if isinstance(data, dict) else None
+        root = data.pop("__root__", None) if isinstance(data, dict) else None
+        
+        if repo_id is None:
+            repo_id = self._source_infos[source_id]["repo_id"]
+        if root is None:
+            root = self._source_infos[source_id].get("root", None)
+        
+        # 关键：多数据集模式下，使用root的最后部分作为dataset_name，确保唯一且与Normalizer对应
+        # 这样每个数据集的统计参数都能被正确地查找
+        if root:
+            dataset_name = root.rstrip("/").split("/")[-1]
+        else:
+            dataset_name = repo_id
+        
+        # 规范化dataset_name：PyTorch ParameterDict不允许名称中有"."
+        dataset_name = dataset_name.replace(".", "_")
+
+        cam_key_mapping = self._cam_key_mapping_by_source[source_id]
+        state_key_mapping = self._state_key_mapping_by_source[source_id]
+        action_key_mapping = self._action_key_mapping_by_source[source_id]
+        subtask_id2name = self._subtask_id2name_by_source[source_id]
+        high_level_cot_map = self._high_level_cot_map_by_source[source_id]
+        vqa_map = self._vqa_map_by_source[source_id]
+
+        image_inputs, h, w, resize_h, resize_w = self._vision_preprocess(data, cam_key_mapping)
+        agent_pos = data[state_key_mapping]
+        action = data[action_key_mapping]
         frame_index = data["frame_index"]
         instruction_info = {"instruction": data["task"]}
 
         # 新增标记 If available, attach subtask label for auxiliary subtask-generation training
-        if self._subtask_id2name is not None and "subtask_index" in data:
+        if subtask_id2name is not None and "subtask_index" in data:
             sid = int(data["subtask_index"])
-            name = self._subtask_id2name.get(sid, "")
+            name = subtask_id2name.get(sid, "")
             if name:
                 instruction_info["subtask_generation"] = name
 
@@ -308,9 +391,9 @@ class PreprocessedDataset(Dataset[T_co]):
         #         instruction_info["instruction"] = htxt
 
         # 新增标记: attach CoT prompt/answer (from tasks_high_level.parquet)
-        if self._high_level_cot_map is not None and "task_index_high_level" in data:
+        if high_level_cot_map is not None and "task_index_high_level" in data:
             hid = int(data["task_index_high_level"])
-            cot_item = self._high_level_cot_map.get(hid)
+            cot_item = high_level_cot_map.get(hid)
             if cot_item:
                 instruction_info["cot_instruction"] = cot_item.get("instruction", "")
                 instruction_info["cot_question"] = cot_item.get("question", "")
@@ -318,14 +401,14 @@ class PreprocessedDataset(Dataset[T_co]):
 
         # 新增标记: attach VQA question/answer (from qa_labels.parquet)
         if (
-            self._vqa_map is not None
+            vqa_map is not None
             and "vqa" in data
             and int(data["vqa"]) == 1
         ):
             episode_index = data.get("episode_index", None)
             if episode_index is not None:
                 key = (int(episode_index), int(frame_index))
-                qa_list = self._vqa_map.get(key)
+                qa_list = vqa_map.get(key)
                 if qa_list:
                     allowed_types = self.data_config.vqa_types
                     if allowed_types:
@@ -351,7 +434,7 @@ class PreprocessedDataset(Dataset[T_co]):
             self.dataload_config.get("action_horizon", 33) - 1,
             frame_index,
             self.data_config.priority_order,
-            self._cam_key_mapping,
+            cam_key_mapping,
             generate_subtask_ratio=generate_subtask_ratio,
             generate_vqa_ratio=generate_vqa_ratio,
             generate_cot_ratio=generate_cot_ratio,
@@ -367,6 +450,7 @@ class PreprocessedDataset(Dataset[T_co]):
             "action": action, # [32,19]
             "agent_pos": agent_pos, # [19]
             "frame_index": frame_index,
+            "dataset_name": dataset_name,  # 多数据集模式下是root目录名，单数据集下是repo_id
         }
 
         return result
@@ -482,8 +566,24 @@ class DataCollator:
         self.lerobot_config = lerobot_config
 
         self.use_fast_tokenizer = self.config.get("use_fast_tokenizer", False)
-        self.dataset_name = self.config["data"]["lerobot_config"].get("repo_id", "")
-        self.dataset_name = [self.dataset_name] * self.config["batch_size_per_gpu"]
+        data_cfg = self.config.get("data", {})
+        
+        # 多数据集模式下，default_dataset_name应该是root的最后部分，而不是repo_id
+        if isinstance(data_cfg.get("lerobot_configs", None), list) and len(data_cfg["lerobot_configs"]) > 0:
+            # 多数据集模式：使用第一个数据集的root目录名作为备选
+            first_root = data_cfg["lerobot_configs"][0].get("root", None)
+            if first_root:
+                self.default_dataset_name = first_root.rstrip("/").split("/")[-1]
+            else:
+                self.default_dataset_name = data_cfg["lerobot_configs"][0].get("repo_id", "")
+        elif isinstance(data_cfg.get("lerobot_config", None), dict):
+            # 单数据集模式：使用repo_id
+            self.default_dataset_name = data_cfg["lerobot_config"].get("repo_id", "")
+        else:
+            self.default_dataset_name = ""
+        
+        # 规范化dataset_name：PyTorch ParameterDict不允许名称中有"."
+        self.default_dataset_name = self.default_dataset_name.replace(".", "_")
         self.load_processor()
 
     def load_processor(self):
@@ -545,6 +645,9 @@ class DataCollator:
 
     def __call__(self, batch):
         additional_inputs = {}
+        dataset_names = [
+            item.get("dataset_name", self.default_dataset_name) for item in batch
+        ]
 
         for key in batch[0].keys():
             if key == "agent_pos":
@@ -556,7 +659,7 @@ class DataCollator:
                 agent_pos.nan_to_num_(nan=0.0)
 
                 agent_pos = self.normalizer_propri.normalize_data(
-                    agent_pos, self.dataset_name
+                    agent_pos, dataset_names
                 )
                 
                 if agent_pos.shape[-1] != 20:
@@ -594,7 +697,7 @@ class DataCollator:
                 
                 # 一旦补充到20维度，似乎意味着normalizer_action内容也必须有20维度 所以这部分应该要放到前面
                 action = self.normalizer_action.normalize_data(
-                    action, self.dataset_name
+                    action, dataset_names
                 )
                 
                 if action.shape[-1] != 20:
@@ -631,6 +734,8 @@ class DataCollator:
                 additional_inputs["frame_index"] = torch.stack(
                     [item["frame_index"] for item in batch]
                 )
+            elif key == "dataset_name":
+                continue
             else:
                 raise NotImplementedError(
                     f"{key} input not implemented in preprocesser"
@@ -640,7 +745,7 @@ class DataCollator:
             additional_inputs["text"],
             additional_inputs["action_chunk"],
             self.train_action_tokenizer if self.use_fast_tokenizer else None,
-            [self.lerobot_config["repo_id"]] * additional_inputs["text"].__len__(),
+            dataset_names,
             additional_inputs["dof_mask"],
         ) # 这里是结尾的一些删除之类 处理FAST的结尾
 
@@ -662,9 +767,7 @@ class DataCollator:
 
         inputs.update(additional_inputs) 
         
-        inputs["dataset_names"] = [self.lerobot_config["repo_id"]] * inputs[
-            "action_chunk"
-        ].shape[0] # ["g1custom", "g1custom", ..., "g1custom"]  # B 个
+        inputs["dataset_names"] = dataset_names
 
         return inputs
 
@@ -698,12 +801,9 @@ def load_lerobot_data(
 
     dataload_config = get_data_configs(config["data"])
 
-    repo_id = lerobot_config.get("repo_id", None)
-    assert repo_id is not None, "repo id is required"
-    root = lerobot_config.get("root", None)
-    meta_info = LeRobotDatasetMetadata(repo_id, root=root)
-    dataset_fps = meta_info.fps
-    episodes_num = meta_info.total_episodes
+    lerobot_configs = dataload_config.get("lerobot_configs", None)
+    if lerobot_configs is None or len(lerobot_configs) == 0:
+        lerobot_configs = [lerobot_config]
 
     # norm_stats_path = config.get("norm_stats_path", None)
     # assert (
@@ -711,69 +811,87 @@ def load_lerobot_data(
     # ), "norm stats is required, please refer to 'wall-x/scripts/compute_norm_stats.py' to compute stats"
     # norm_stats = load_norm_stats(norm_stats_path, repo_id)
 
-    modality_json_path = _resolve_modality_json_path(lerobot_config)
     horizon = dataload_config.get("action_horizon", 33) - 1  # 例如 32
 
-    delta_timestamps = _build_delta_timestamps(
-        repo_id=repo_id,
-        dataset_fps=dataset_fps,
-        action_horizon=horizon,
-        modality_json_path=modality_json_path,
-    ) # len = 2
-
     batch_size = config.get("batch_size_per_gpu", 8)
-    all_episodes = np.arange(episodes_num).tolist()
-    configured_episodes = dataload_config.get("episodes", None)
-    if configured_episodes is None:
-        configured_episodes = lerobot_config.get("episodes", None)
 
-    if configured_episodes is not None:
-        if isinstance(configured_episodes, int):
-            train_episodes = [int(configured_episodes)]
-        else:
-            train_episodes = [int(ep) for ep in configured_episodes]
+    train_datasets = []
+    source_infos = []
+    total_test_episodes = {}
+    global_configured_episodes = dataload_config.get("episodes", None)
 
-        invalid_episodes = [
-            ep for ep in train_episodes if ep < 0 or ep >= episodes_num
-        ]
-        assert (
-            len(invalid_episodes) == 0
-        ), f"Invalid episode ids: {invalid_episodes}, valid range is [0, {episodes_num - 1}]"
+    for cfg_idx, single_cfg in enumerate(lerobot_configs):
+        repo_id = single_cfg.get("repo_id", None)
+        assert repo_id is not None, f"repo id is required for lerobot_configs[{cfg_idx}]"
+        root = single_cfg.get("root", None)
+        meta_info = LeRobotDatasetMetadata(repo_id, root=root)
+        dataset_fps = meta_info.fps
+        episodes_num = meta_info.total_episodes
 
-        test_episodes = [ep for ep in all_episodes if ep not in set(train_episodes)]
-    else:
-        train_test_split = dataload_config.get("train_test_split", 0.95)
-        train_episodes = all_episodes[: int(episodes_num * train_test_split)]
-        test_episodes = all_episodes[int(episodes_num * train_test_split) :]
-    
-    if modality_json_path is not None and len(str(modality_json_path)) > 0:
-        from wall_x.data.modality_wrapper import ModalityAwareLeRobotDataset
-
-        train_dataset = ModalityAwareLeRobotDataset(
+        modality_json_path = _resolve_modality_json_path(single_cfg)
+        delta_timestamps = _build_delta_timestamps(
             repo_id=repo_id,
-            root=root,
-            episodes=train_episodes,
-            delta_timestamps=delta_timestamps,
-            video_backend="pyav",
-            modality_json=modality_json_path,
-            # action_horizon=horizon
-            # state_key=KEY_MAPPINGS[repo_id]["state"],   # "state"
-            # action_key=KEY_MAPPINGS[repo_id]["action"], # "action"
-        )
-    else:
-        train_dataset = LeRobotDataset(
-            repo_id,
-            root=root,
-            episodes=train_episodes,
-            delta_timestamps=delta_timestamps,
-            video_backend="pyav",
+            dataset_fps=dataset_fps,
+            action_horizon=horizon,
+            modality_json_path=modality_json_path,
         )
 
-    if rank == 0:
-        print(f"Selected train episodes: {train_dataset.episodes}")
-        print(f"Number of train episodes selected: {train_dataset.num_episodes}")
-        print(f"Number of train frames selected: {train_dataset.num_frames}")
-        print(f"Selected test episodes: {test_episodes}")
+        all_episodes = np.arange(episodes_num).tolist()
+        configured_episodes = single_cfg.get("episodes", None)
+        if configured_episodes is None:
+            configured_episodes = global_configured_episodes
+
+        if configured_episodes is not None:
+            if isinstance(configured_episodes, int):
+                train_episodes = [int(configured_episodes)]
+            else:
+                train_episodes = [int(ep) for ep in configured_episodes]
+
+            invalid_episodes = [ep for ep in train_episodes if ep < 0 or ep >= episodes_num]
+            assert (
+                len(invalid_episodes) == 0
+            ), f"Invalid episode ids in {repo_id}: {invalid_episodes}, valid range is [0, {episodes_num - 1}]"
+
+            test_episodes = [ep for ep in all_episodes if ep not in set(train_episodes)]
+        else:
+            train_test_split = dataload_config.get("train_test_split", 0.95)
+            train_episodes = all_episodes[: int(episodes_num * train_test_split)]
+            test_episodes = all_episodes[int(episodes_num * train_test_split) :]
+
+        if modality_json_path is not None and len(str(modality_json_path)) > 0:
+            from wall_x.data.modality_wrapper import ModalityAwareLeRobotDataset
+
+            train_dataset = ModalityAwareLeRobotDataset(
+                repo_id=repo_id,
+                root=root,
+                episodes=train_episodes,
+                delta_timestamps=delta_timestamps,
+                video_backend="pyav",
+                modality_json=modality_json_path,
+            )
+        else:
+            train_dataset = LeRobotDataset(
+                repo_id,
+                root=root,
+                episodes=train_episodes,
+                delta_timestamps=delta_timestamps,
+                video_backend="pyav",
+            )
+
+        train_datasets.append(train_dataset)
+        source_infos.append({"repo_id": repo_id, "root": root})
+        total_test_episodes[repo_id] = test_episodes
+
+        if rank == 0:
+            print(f"[{repo_id}] Selected train episodes: {train_dataset.episodes}")
+            print(f"[{repo_id}] Number of train episodes selected: {train_dataset.num_episodes}")
+            print(f"[{repo_id}] Number of train frames selected: {train_dataset.num_frames}")
+            print(f"[{repo_id}] Selected test episodes: {test_episodes}")
+
+    if len(train_datasets) == 1:
+        train_dataset = train_datasets[0]
+    else:
+        train_dataset = MultiSourceLeRobotDataset(train_datasets, source_infos)
 
     dataset = PreprocessedDataset(
         train_dataset,
@@ -781,7 +899,8 @@ def load_lerobot_data(
         dataload_config,
         normalizer_action,
         normalizer_propri,
-        lerobot_config,
+        lerobot_configs[0],
+        lerobot_configs=lerobot_configs,
         seed=seed,
         rank=rank,
         world_size=world_size,
@@ -801,7 +920,7 @@ def load_lerobot_data(
         print(f"✦ RANK: {rank}")
         print(f"✦ WORLD SIZE: {world_size}")
         print(f"✦ BATCH SIZE PER GPU: {batch_size}")
-        print(f"✦ REPO ID: {repo_id}")
+        print(f"✦ REPO IDS: {[cfg.get('repo_id') for cfg in lerobot_configs]}")
         print(f"✦ TOTAL DATASET SIZE: {len(dataset)}")
         if world_size > 1:
             print(f"✦ SAMPLES PER PROCESS: {samples_per_process}")

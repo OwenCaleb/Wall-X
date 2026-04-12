@@ -121,10 +121,108 @@ def extract_frames_ffmpeg(video_path: Path, out_dir: Path, stride: int, overwrit
         f.rename(target)
 
 
+def find_datasets_batch(batch_root: Path, pattern: str) -> List[Path]:
+    """Find all matching dataset dirs (assumed to be {DATASET_NAME}/{DATASET_NAME}{pattern})"""
+    if not batch_root.exists():
+        raise FileNotFoundError(f"Batch root not found: {batch_root}")
+    
+    # Find all dirs matching pattern at depth 2
+    matches = []
+    for item in batch_root.iterdir():
+        if item.is_dir():
+            for subitem in item.iterdir():
+                if subitem.is_dir() and subitem.name.endswith(pattern):
+                    matches.append(subitem)
+    return sorted(matches)
+
+
+def process_single_dataset(
+    root: Path,
+    camera_view: str,
+    stride: int,
+    out_tag: str,
+    do_video: bool,
+    do_frames: bool,
+    overwrite_video: bool,
+    overwrite_frames: bool,
+    use_video_for_frames: bool,
+) -> None:
+    """Process a single dataset"""
+    in_dir = root / DEFAULT_CHUNK_DIR / camera_view
+
+    vids = list_episode_videos(in_dir)
+    if not vids:
+        print(f"[WARN] No videos found under: {in_dir}")
+        return
+
+    out_video_root = root / f"video_retarget_{out_tag}"
+    out_frame_root = root / f"frame_retarget_{out_tag}"
+    if do_video:
+        ensure_dir(out_video_root)
+    if do_frames:
+        ensure_dir(out_frame_root)
+
+    for vp in vids:
+        ep = parse_episode_index(vp)
+        sample_name = f"sample_{ep:0{SAMPLE_PAD}d}"
+
+        # Paths
+        sample_video_dir = out_video_root / sample_name
+        dst_video = sample_video_dir / f"Frame_{ep:0{FRAME_PAD}d}{EPISODE_EXT}"
+        sample_frame_dir = out_frame_root / sample_name
+
+        # 1) video
+        if do_video:
+            transcode_to_h264(vp, dst_video, overwrite=overwrite_video)
+
+        # 2) frames
+        if do_frames:
+            # If already has jpgs and not overwriting, skip
+            if sample_frame_dir.exists() and any(sample_frame_dir.glob("*.jpg")) and not overwrite_frames:
+                print(f"[SKIP] frames exist: {sample_frame_dir}")
+            else:
+                # choose source for frame extraction
+                frame_src = dst_video if (use_video_for_frames and dst_video.exists()) else vp
+                extract_frames_ffmpeg(frame_src, sample_frame_dir, stride, overwrite=overwrite_frames)
+
+        # log
+        msg = f"[OK] {sample_name}:"
+        if do_video:
+            msg += f" h264 -> {dst_video.name};"
+        if do_frames:
+            msg += f" frames -> {sample_frame_dir}"
+        print(msg)
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--root", required=True, help="Dataset root path")
-    ap.add_argument("--camera_view", required=True, help="Camera view subdir under videos/chunk-000/")
+    
+    # Single dataset mode (original)
+    ap.add_argument("--root", help="Dataset root path (single dataset mode)")
+    
+    # Batch mode
+    ap.add_argument(
+        "--batch-root",
+        help="Batch processing root (e.g. /path/to/datasets). Finds all dirs matching --pattern",
+    )
+    ap.add_argument(
+        "--pattern",
+        default="_old",
+        help="Pattern to match dataset dirs in batch mode (default: '_old')",
+    )
+    ap.add_argument(
+        "--cameras",
+        nargs="+",
+        default=[
+            "observation.images.head_realsense_color",
+            "observation.images.left_hand_realsense_color",
+            "observation.images.right_hand_realsense_color",
+        ],
+        help="Camera views to process (space-separated, default: all 3)",
+    )
+    
+    # Common args
+    ap.add_argument("--camera_view", help="Camera view subdir under videos/chunk-000/ (single mode)")
     ap.add_argument("--stride", type=int, default=DEFAULT_STRIDE, help="Extract 1 frame every N frames")
     ap.add_argument("--Hz", type=float, default=DEFAULT_HZ, help="Nominal video Hz (default 10). Kept for compatibility.")
     ap.add_argument("--overwrite_video", action="store_true", help="Overwrite existing retargeted H.264 video")
@@ -146,15 +244,74 @@ def main():
 
     args = ap.parse_args()
 
+    # Validate mode
+    batch_mode = args.batch_root is not None
+    single_mode = args.root is not None
+    
+    if batch_mode and single_mode:
+        raise ValueError("Cannot specify both --root and --batch-root. Choose one mode.")
+    if not batch_mode and not single_mode:
+        raise ValueError("Must specify either --root (single mode) or --batch-root (batch mode)")
+    
+    if single_mode and not args.camera_view:
+        raise ValueError("--camera_view required in single mode")
+
     # Default behavior: if neither flag set, do both (backward compatible)
     do_video = args.do_video or (not args.do_video and not args.do_frames)
     do_frames = args.do_frames or (not args.do_video and not args.do_frames)
 
-    root = Path(args.root).resolve()
-    in_dir = root / DEFAULT_CHUNK_DIR / args.camera_view
-
     if (do_video or do_frames) and not has_ffmpeg():
         raise RuntimeError("ffmpeg is required but not found in PATH.")
+
+    # ==================== BATCH MODE ====================
+    if batch_mode:
+        batch_root = Path(args.batch_root).resolve()
+        datasets = find_datasets_batch(batch_root, args.pattern)
+        
+        if not datasets:
+            raise RuntimeError(f"No datasets found matching pattern '{args.pattern}' under {batch_root}")
+        
+        print(f"[BATCH] Found {len(datasets)} dataset(s):")
+        for ds in datasets:
+            print(f"  - {ds}")
+        print()
+        
+        total_ok = 0
+        total_fail = 0
+        for dataset_root in datasets:
+            print(f"\n{'='*70}")
+            print(f"[BATCH] Processing: {dataset_root.name}")
+            print(f"[BATCH] Root: {dataset_root}")
+            print(f"{'='*70}")
+            
+            for camera in args.cameras:
+                print(f"\n[BATCH] Camera: {camera}")
+                try:
+                    process_single_dataset(
+                        root=dataset_root,
+                        camera_view=camera,
+                        stride=args.stride,
+                        out_tag=args.out_tag,
+                        do_video=do_video,
+                        do_frames=do_frames,
+                        overwrite_video=args.overwrite_video,
+                        overwrite_frames=args.overwrite_frames,
+                        use_video_for_frames=args.use_video_for_frames,
+                    )
+                    total_ok += 1
+                except Exception as e:
+                    print(f"[ERROR] Failed to process {dataset_root.name} / {camera}")
+                    print(f"[ERROR] {e}")
+                    total_fail += 1
+        
+        print(f"\n{'='*70}")
+        print(f"[BATCH] Summary: {total_ok} OK, {total_fail} FAILED")
+        print(f"{'='*70}")
+        return
+
+    # ==================== SINGLE MODE ====================
+    root = Path(args.root).resolve()
+    in_dir = root / DEFAULT_CHUNK_DIR / args.camera_view
 
     vids = list_episode_videos(in_dir)
     if not vids:
@@ -178,36 +335,17 @@ def main():
     if do_frames:
         print(f"[INFO] frame_retarget={out_frame_root}")
 
-    for vp in vids:
-        ep = parse_episode_index(vp)
-        sample_name = f"sample_{ep:0{SAMPLE_PAD}d}"
-
-        # Paths
-        sample_video_dir = out_video_root / sample_name
-        dst_video = sample_video_dir / f"Frame_{ep:0{FRAME_PAD}d}{EPISODE_EXT}"
-        sample_frame_dir = out_frame_root / sample_name
-
-        # 1) video
-        if do_video:
-            transcode_to_h264(vp, dst_video, overwrite=args.overwrite_video)
-
-        # 2) frames
-        if do_frames:
-            # If already has jpgs and not overwriting, skip
-            if sample_frame_dir.exists() and any(sample_frame_dir.glob("*.jpg")) and not args.overwrite_frames:
-                print(f"[SKIP] frames exist: {sample_frame_dir}")
-            else:
-                # choose source for frame extraction
-                frame_src = dst_video if (args.use_video_for_frames and dst_video.exists()) else vp
-                extract_frames_ffmpeg(frame_src, sample_frame_dir, args.stride, overwrite=args.overwrite_frames)
-
-        # log
-        msg = f"[OK] {sample_name}:"
-        if do_video:
-            msg += f" h264 -> {dst_video.name};"
-        if do_frames:
-            msg += f" frames -> {sample_frame_dir}"
-        print(msg)
+    process_single_dataset(
+        root=root,
+        camera_view=args.camera_view,
+        stride=args.stride,
+        out_tag=args.out_tag,
+        do_video=do_video,
+        do_frames=do_frames,
+        overwrite_video=args.overwrite_video,
+        overwrite_frames=args.overwrite_frames,
+        use_video_for_frames=args.use_video_for_frames,
+    )
 
     print("[DONE]")
 
@@ -218,23 +356,28 @@ if __name__ == "__main__":
 """
 Examples:
 
-observation.images.head_realsense_color
-observation.images.left_hand_realsense_color
-observation.images.right_hand_realsense_color
+Camera views:
+  - observation.images.head_realsense_color
+  - observation.images.left_hand_realsense_color
+  - observation.images.right_hand_realsense_color
 
-# default (backward compatible): do both video + frames
+============ SINGLE DATASET MODE ============
+
+# Default (backward compatible): do both video + frames
 python retarget_videos_and_frames.py \
-  --root /mnt/nas_ssd/workspace/wenboli/projects/Wall-X/wallx/data/g1_new/lerobot/Teleop_251103_Sort_Anonymous_10Hz_old \
-  --camera_view observation.images.right_hand_realsense_color \
-  --stride 100
+  --root /mnt/nas_ssd/workspace/wenboli/projects/Wall-X/wallx/data/g1/lerobot/Teleop_251022_GrapeCleanbgWaist_Anonymous_10Hz/Teleop_251022_GrapeCleanbgWaist_Anonymous_10Hz_old \
+  --camera_view observation.images.head_realsense_color \
+  --stride 10 \
+  --use_video_for_frames \
+  --out_tag head
 
-# only transcode video
+# Only transcode video
 python retarget_videos_and_frames.py \
   --root /path/to/ds \
   --camera_view observation.images.right_hand_realsense_color \
   --do_video
 
-# only extract frames (from original video)
+# Only extract frames (from original video)
 python retarget_videos_and_frames.py \
   --root /mnt/nas_ssd/workspace/wenboli/projects/Wall-X/wallx/data/g1_new/lerobot/Teleop_251103_Sort_Anonymous_10Hz_old \
   --camera_view observation.images.head_realsense_color \
@@ -242,11 +385,51 @@ python retarget_videos_and_frames.py \
   --stride 1 \
   --out_tag head
 
-# extract frames from retargeted H.264 if exists
+# Extract frames from retargeted H.264 if exists
 python retarget_videos_and_frames.py \
   --root /path/to/ds \
   --camera_view observation.images.right_hand_realsense_color \
   --do_video --do_frames \
   --use_video_for_frames \
   --stride 100
+
+============ BATCH MODE (NEW!) ============
+
+# Batch process all datasets ending with "_old" (all 3 cameras)
+# Processes all matching dirs under /path/to/batch/root
+python retarget_videos_and_frames.py \
+  --batch-root /mnt/nas_ssd/workspace/wenboli/projects/Wall-X/wallx/data/g1/lerobot \
+  --pattern _old \
+  --stride 10 \
+  --use_video_for_frames \
+  --out_tag head
+
+# Batch with custom pattern
+python retarget_videos_and_frames.py \
+  --batch-root /mnt/nas_ssd/workspace/wenboli/projects/Wall-X/wallx/data/g1/lerobot \
+  --pattern _new \
+  --do_frames \
+  --stride 1 \
+  --out_tag head
+
+# Batch with specific cameras only
+python retarget_videos_and_frames.py \
+  --batch-root /mnt/nas_ssd/workspace/wenboli/projects/Wall-X/wallx/data/g1/lerobot \
+  --pattern _old \
+  --cameras observation.images.head_realsense_color observation.images.right_hand_realsense_color \
+  --stride 10 \
+  --out_tag multi_camera
+
+# Batch: only transcode video (faster)
+python retarget_videos_and_frames.py \
+  --batch-root /mnt/nas_ssd/workspace/wenboli/projects/Wall-X/wallx/data/g1/lerobot \
+  --pattern _old \
+  --do_video \
+  --out_tag head
+
+Batch mode will:
+  1. Auto-discover all matching dataset dirs
+  2. Process each camera view in each dataset
+  3. Catch and report errors without stopping
+  4. Print summary at the end
 """

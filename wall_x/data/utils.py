@@ -502,21 +502,8 @@ def get_wallx_normal_text(
     action_symbol = "<|action|>"
     action_fast_symbol = "<|action_fast|>"
 
-    instruction_tag = "<Instruction>"
-    instruction_end_tag = "</Instruction>"
-    thought_tag = "<Thought>"
-    thought_end_tag = "</Thought>"
-    subtask_tag = "<Subtask>"
-    subtask_end_tag = "</Subtask>"
-
-    def _wrap_tag(tag: str, end_tag: str, content: str) -> str:
-        return f"{tag}{content}{end_tag}"
-
-    def _append_if_nonempty(parts: list, tag: str, end_tag: str, s: Any) -> None:
-        s = "" if s is None else str(s)
-        s = s.strip()
-        if s:
-            parts.append(_wrap_tag(tag, end_tag, s))
+    def _clean_text(s: Any) -> str:
+        return ("" if s is None else str(s)).strip()
 
     def _get_subtask_text(frame_info: Dict[str, Any]) -> str:
         for k in ("subtask_generation", "distribute"):
@@ -592,16 +579,8 @@ def get_wallx_normal_text(
 
     vqa_question, vqa_answer, vqa_type = _pick_vqa(frame_instruction_info)
 
-    # Helper: build user message with instruction tag
-    def _build_user_with_instruction(instr: str, extra: str = "") -> str:
-        instr = (instr or "").strip()
-        return (
-            f"{user_request} {_wrap_tag(instruction_tag, instruction_end_tag, instr)}"
-            f"{extra}{role_end_symbol}\n"
-        )
-
     # Decide whether to generate VQA / CoT / Subtask / Action
-    if if_vqa == 1:
+    if if_vqa == 1: # 会报错，因为对于没有vqa的样本无法正常处理
         if not (vqa_question and vqa_answer):
             return "", False  # caller should skip
         instr = str(frame_instruction_info.get("instruction", "") or "").strip()
@@ -639,20 +618,17 @@ def get_wallx_normal_text(
         # CoT text supervision: must output both Thought + Subtask
         instr = cot_instruction or str(frame_instruction_info.get("instruction", "") or "").strip()
 
-        text_prompt = (
-            "Output <Thought> and <Subtask>.\n"
-        )
+        text_prompt = "Output thought and subtask.\n"
         user_message = (
             f"{user_request} "
             f"{instr}"
-            # f"{_wrap_tag(instruction_tag, instruction_end_tag, instr)}"
             f"{text_prompt}{role_end_symbol}\n"
         )
 
         assistant_output = (
             f"{role_start_symbol}assistant\n"
-            f"{_wrap_tag(thought_tag, thought_end_tag, cot_answer)}\n"
-            f"{_wrap_tag(subtask_tag, subtask_end_tag, subtask_text)}\n"
+            f"Thought: {_clean_text(cot_answer)}\n"
+            f"Subtask: {_clean_text(subtask_text)}\n"
             f"{role_end_symbol}\n"
         )
         generate_text = True
@@ -661,17 +637,16 @@ def get_wallx_normal_text(
         # Subtask-only text supervision
         instr = str(frame_instruction_info.get("instruction", "") or "").strip()
 
-        text_prompt = "Output <Subtask>.\n"
+        text_prompt = "\nPredict the next action in language.\n"
         user_message = (
             f"{user_request} "
-            # f"{_wrap_tag(instruction_tag, instruction_end_tag, instr)}"
             f"{instr}"
             f"{text_prompt}{role_end_symbol}\n"
         )
 
         assistant_output = (
             f"{role_start_symbol}assistant\n"
-            f"{_wrap_tag(subtask_tag, subtask_end_tag, subtask_text)}\n"
+            f"{_clean_text(subtask_text)}\n"
             f"{role_end_symbol}\n"
         )
         generate_text = True
@@ -688,10 +663,6 @@ def get_wallx_normal_text(
         # has_mid = bool(subtask_text or cot_answer)
         # use_full = want_full and has_mid
 
-        # input_parts = [_wrap_tag(instruction_tag, instruction_end_tag, instr)]
-        # if use_full:
-        #     _append_if_nonempty(input_parts, thought_tag, thought_end_tag, cot_answer)
-        #     _append_if_nonempty(input_parts, subtask_tag, subtask_end_tag, subtask_text)
         text_prompt = f"\nPredict the next action in robot action.\nProprioception: {propri_symbol}\n"
         user_message = f"{user_request} {instr}{text_prompt}{role_end_symbol}\n"
         assistant_output = f"{role_start_symbol}assistant\n{action_fast_symbol}{role_end_symbol}\n{action_symbol * action_chunk_size}"

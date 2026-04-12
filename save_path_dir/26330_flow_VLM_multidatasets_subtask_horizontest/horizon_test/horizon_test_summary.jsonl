@@ -1,0 +1,5 @@
+{"dataset": "Teleop_251103_Sort_Anonymous_10Hz", "episodes": "[0]", "horizon": 4, "mae": 0.00898300763219595}
+{"dataset": "Teleop_251103_Sort_Anonymous_10Hz", "episodes": "[0]", "horizon": 32, "mae": 0.017604682594537735}
+{"dataset": "Teleop_251103_Sort_Anonymous_10Hz", "episodes": "[0]", "horizon": 64, "mae": 0.06163139268755913}
+{"dataset": "Teleop_251103_Sort_Anonymous_10Hz", "episodes": "[0]", "horizon": 128, "mae": 0.1018068939447403}
+{"dataset": "Teleop_251103_Sort_Anonymous_10Hz", "episodes": "[0]", "horizon": 256, "mae": 0.1346312165260315}

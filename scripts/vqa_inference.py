@@ -12,12 +12,14 @@ from transformers import AutoProcessor
 
 from wall_x.model.qwen2_5_based.modeling_qwen2_5_vl_act import Qwen2_5_VLMoEForAction
 
+
+DEFAULT_MODEL_PATH = "/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/wallx/models/wallx/wall-oss-flow-v0.1-copy"
+DEFAULT_CONFIG_PATH = "/mnt/nas_ssd/workspace/wenboli/projects/Wall-X/workspace/lerobot_example/config_qact_custom.yml"
+DEFAULT_HOST = "0.0.0.0"
+DEFAULT_PORT = 8000
+
 '''
-python scripts/vqa_inference.py \
-  --model_path /mnt/nas_ssd/workspace/wenboli/projects/Wall-X/wallx/models/wallx/wall-oss-flow-copy \
-  --config /mnt/nas_ssd/workspace/wenboli/projects/Wall-X/workspace/lerobot_example/config_qact_custom.yml \
-  --host 0.0.0.0 \
-  --port 8000
+python scripts/vqa_client.py --dataset_subtask_eval --out_jsonl
 '''
 
 class VQAWrapper(object):
@@ -171,6 +173,15 @@ class VQAServer:
         self.wrapper = VQAWrapper(model_path=model_path, train_config=train_config)
 
     def handle(self, payload: dict) -> dict:
+        # Raw prompt mode: caller provides a full chat prompt and we only run generation.
+        # This is useful for dataset-aligned evaluation where prompt format must exactly
+        # match training/eval data construction.
+        if "raw_prompt" in payload:
+            images = decode_images(payload)
+            generation_params = payload.get("generation_params", {})
+            answer = self.wrapper.generate(images, str(payload["raw_prompt"]), **generation_params)
+            return {"answer": answer, "mode": "raw_prompt"}
+
         task_type = payload.get("task_type", "vqa")
         instruction = payload.get("instruction", "")
         question = payload.get("question", "")
@@ -242,10 +253,10 @@ def serve(model_path: str, config_path: str, host: str, port: int) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model_path", type=str, required=True)
-    parser.add_argument("--config", type=str, default=None)
-    parser.add_argument("--host", type=str, default="0.0.0.0")
-    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--model_path", type=str, default=DEFAULT_MODEL_PATH)
+    parser.add_argument("--config", type=str, default=DEFAULT_CONFIG_PATH)
+    parser.add_argument("--host", type=str, default=DEFAULT_HOST)
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     args = parser.parse_args()
 
     serve(args.model_path, args.config, args.host, args.port)

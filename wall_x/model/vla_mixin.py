@@ -783,14 +783,23 @@ class ActionGenerationMixin(GenerationMixin):
             unique_datasets_name = list(set(dataset_names))
             channel_loss_dict = {
                 dataset_name: torch.tensor(0.0, device=logits.device)
-                # for dataset_name in unique_datasets_name
-                for dataset_name in ACTION_DATASET_NAMES + MULTIMODAL_DATASET_NAMES
+                for dataset_name in unique_datasets_name
             } #  存储交叉熵损失
             channel_loss_count_dict = {
                 dataset_name: torch.tensor(0, device=logits.device)
-                # for dataset_name in unique_datasets_name
-                for dataset_name in ACTION_DATASET_NAMES + MULTIMODAL_DATASET_NAMES
+                for dataset_name in unique_datasets_name
             } # # 统计 action dataset 的有效 token 数量
+
+            # Keep legacy keys for logging compatibility.
+            for dataset_name in ACTION_DATASET_NAMES + MULTIMODAL_DATASET_NAMES:
+                if dataset_name not in channel_loss_dict:
+                    channel_loss_dict[dataset_name] = torch.tensor(
+                        0.0, device=logits.device
+                    )
+                if dataset_name not in channel_loss_count_dict:
+                    channel_loss_count_dict[dataset_name] = torch.tensor(
+                        0, device=logits.device
+                    )
         else:
             unique_datasets_name, channel_loss_dict, channel_loss_count_dict = (
                 None,
@@ -809,11 +818,12 @@ class ActionGenerationMixin(GenerationMixin):
             shift_labels = shift_labels.to(shift_logits.device)
             non_ignored_mask = shift_labels != -100
             _cross_entropy_loss = self.loss_fct(shift_logits, shift_labels)
-            cross_entropy_loss = (
-                _cross_entropy_loss[non_ignored_mask].mean()
-                if non_ignored_mask.any()
-                else torch.tensor(0.0, device=shift_logits.device)
-            ) # 如果存在至少一个非 ignore token，就取这些 token 的 mean；否则 CE=0。
+            if non_ignored_mask.any():
+                cross_entropy_loss = _cross_entropy_loss[non_ignored_mask].mean()
+            else:
+                # Keep autograd graph connected to LM path even when this rank has
+                # no valid text labels in the current micro-batch.
+                cross_entropy_loss = (_cross_entropy_loss * 0.0).sum()
 
             # compute channel loss
             _cross_entropy_loss = _cross_entropy_loss.view(batch_size, seq_length - 1)
@@ -878,6 +888,14 @@ class ActionGenerationMixin(GenerationMixin):
                 _flow_loss = _flow_loss.view(
                     dof_mask.shape[0], dof_mask.shape[1], dof_mask.shape[2]
                 )
+            else:
+                # Keep FSDP collective paths aligned across ranks when some ranks have
+                # text-only batches (no action token) while others compute flow loss.
+                dummy_flow = torch.tensor(0.0, device=hidden_states.device)
+                for p in self.action_preprocessor.parameters():
+                    if p.requires_grad:
+                        dummy_flow = dummy_flow + p.sum() * 0.0
+                loss = loss + dummy_flow
 
         return (
             loss,

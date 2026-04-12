@@ -3,6 +3,7 @@ import gc
 import time
 import yaml
 import shutil
+import re
 import torch
 import random
 import numpy as np
@@ -227,23 +228,90 @@ class QwenVlAct_Trainer:
             )
 
     def load_normalizer(self):
-        if self.config.get("norm_stats_path", None):
+        """
+        Load normalization statistics for action and proprioception.
+        
+        Supports both single norm_stats_path (for single dataset) and
+        multi-dataset mode where each dataset has its own norm_stats_path.
+        
+        关键：对于多数据集，使用dataset_name作为key存储各自的统计，而不是直接合并覆盖
+        """
+        action_statistic_dof = {}
+        
+        # Check if using multi-dataset mode
+        dataload_config = self.config.get("data", {})
+        lerobot_configs = dataload_config.get("lerobot_configs", None)
+        
+        if lerobot_configs is not None and isinstance(lerobot_configs, list) and len(lerobot_configs) > 1:
+            # Multi-dataset mode: 为每个数据集创建唯一的dataset_name，保留各自的统计
+            print(f"[Multi-Dataset Mode] Loading statistics for {len(lerobot_configs)} datasets:")
+            for cfg_idx, cfg in enumerate(lerobot_configs):
+                norm_stats_path = cfg.get("norm_stats_path", None)
+                root = cfg.get("root", None)
+                
+                # 为每个数据集生成唯一的dataset_name：使用目录名的最后部分
+                if root:
+                    dataset_name = root.rstrip("/").split("/")[-1]  # e.g., "Teleop_251022_..."
+                else:
+                    dataset_name = f"dataset_{cfg_idx}"
+                
+                # 规范化dataset_name：PyTorch ParameterDict不允许名称中有"."
+                dataset_name = dataset_name.replace(".", "_")
+                
+                if norm_stats_path and os.path.exists(norm_stats_path):
+                    self.print_rank0(f"  [{cfg_idx}] {dataset_name} <- {norm_stats_path}")
+                    try:
+                        stats_from_file = json.load(open(norm_stats_path, "r"))
+                        
+                        # 关键：不是覆盖，而是为这个数据集保留一份独立的统计副本
+                        # 从文件中提取内容（可能是 {"g1custom": {...}} 或 {"某个repo_id": {...}}）
+                        # 然后以dataset_name为key重新包装，这样每个数据集的统计都被保留
+                        for repo_id, repo_stats in stats_from_file.items():
+                            if dataset_name not in action_statistic_dof:
+                                action_statistic_dof[dataset_name] = {}
+                            # 深度合并：对于同一个dataset，合并所有field的统计
+                            action_statistic_dof[dataset_name].update(repo_stats)
+                            self.print_rank0(f"     ✓ Loaded stats for fields: {list(repo_stats.keys())}")
+                    except Exception as e:
+                        self.print_rank0(f"  [WARNING] Failed to load {norm_stats_path}: {e}")
+                else:
+                    self.print_rank0(
+                        f"  [WARNING] norm_stats_path not found: {norm_stats_path}"
+                    )
+            
+            if not action_statistic_dof:
+                self.print_rank0(
+                    "No stats found from lerobot_configs, falling back to global norm_stats_path"
+                )
+        
+        # Fallback to single dataset mode
+        if not action_statistic_dof:
+            if self.config.get("norm_stats_path", None):
+                norm_stats_path = self.config["norm_stats_path"]
+                self.print_rank0(
+                    f"[Single Dataset Mode] Loading from {norm_stats_path}"
+                )
+                try:
+                    action_statistic_dof = json.load(open(norm_stats_path, "r"))
+                except Exception as e:
+                    self.print_rank0(f"Failed to load {norm_stats_path}: {e}")
+                    action_statistic_dof = None
+        
+        # Use default if nothing loaded
+        if not action_statistic_dof:
             self.print_rank0(
-                f"loading customized action statistic dof from {self.config['norm_stats_path']}"
-            )
-            action_statistic_dof = json.load(open(self.config["norm_stats_path"], "r"))
-        else:
-            self.print_rank0(
-                "loading default action statistic dof from default_action_statistic_dof"
+                "Loading default action statistic dof from default_action_statistic_dof"
             )
             action_statistic_dof = default_action_statistic_dof
+        
+        self.print_rank0(f"Normalizer will manage {len(action_statistic_dof)} dataset(s): {list(action_statistic_dof.keys())}")
 
         self.normalizer_action = Normalizer(
             action_statistic_dof,
             self.config["dof_config"],
             min_key=self.config.get("min_key", "min"),
             delta_key=self.config.get("delta_key", "delta"),
-        ) # 维度拼接后统一放在torch上；映射g1custom->min；g1custom->delta
+        )
 
         print("self.normalizer_action.min: ", self.normalizer_action)
         self.normalizer_propri = Normalizer(
@@ -263,6 +331,260 @@ class QwenVlAct_Trainer:
         """
         if self.accelerator.is_main_process:
             print(msg, flush=flush)
+
+    @torch.no_grad()
+    def _maybe_debug_print_losses_and_text(self, batch, outputs, epoch, step):
+        """Optionally print and/or save text-action debug information."""
+        enable_print = self.config.get("debug_print_text_action_loss", False)
+        enable_txt = self.config.get("debug_write_text_action_txt", False)
+        if not enable_print and not enable_txt:
+            return
+        if not self.accelerator.is_main_process:
+            return
+
+        every_n = max(1, int(self.config.get("debug_print_every_steps", 100)))
+        if step % every_n != 0:
+            return
+
+        total_loss = outputs.loss.item() if outputs.loss is not None else None
+        text_loss = (
+            outputs.cross_entropy_loss.item()
+            if getattr(outputs, "cross_entropy_loss", None) is not None
+            else None
+        )
+        action_loss = (
+            outputs.flow_loss.item()
+            if getattr(outputs, "flow_loss", None) is not None
+            else None
+        )
+        if enable_print:
+            self.print_rank0(
+                f"[debug-loss] epoch={epoch} step={step} total={total_loss} text={text_loss} action={action_loss}",
+                flush=True,
+            )
+
+        input_ids = batch.get("input_ids", None)
+        labels = batch.get("labels", None)
+        logits = getattr(outputs, "logits", None)
+        if input_ids is None or labels is None or logits is None:
+            return
+        if labels is None:
+            return
+
+        tokenizer = self.processor.tokenizer
+        pred_ids = logits.argmax(dim=-1)
+        attention_mask = batch.get("attention_mask", None)
+        dataset_names = batch.get("dataset_names", None)
+        raw_text_batch = batch.get("text", None)
+
+        shift_logits = logits[:, :-1, :].contiguous()
+        shift_labels = labels[:, 1:].contiguous()
+        shift_pred_ids = pred_ids[:, :-1].contiguous()
+
+        max_samples = max(1, int(self.config.get("debug_print_max_samples", 1)))
+        max_tokens = max(1, int(self.config.get("debug_print_max_tokens", 256)))
+        max_chars = max(64, int(self.config.get("debug_text_max_chars", 1200)))
+        only_no_action = self.config.get("debug_only_no_action_samples", True)
+        pred_decode_mode = self.config.get("debug_pred_decode_mode", "both")
+        record_input_text = self.config.get("debug_record_input_text", False)
+
+        action_token_id = self.action_token_id
+        all_indices = list(range(input_ids.shape[0]))
+        if only_no_action:
+            all_indices = [
+                idx
+                for idx in all_indices
+                if not (input_ids[idx] == action_token_id).any().item()
+            ]
+
+        num_samples = min(len(all_indices), max_samples)
+        selected_indices = all_indices[:num_samples]
+
+        step_records = []
+        sample_text_losses = []
+
+        full_skip_special_tokens = self.config.get(
+            "debug_pred_full_skip_special_tokens", True
+        )
+        strip_replacement_char = self.config.get(
+            "debug_strip_replacement_char", True
+        )
+
+        def _safe_decode(token_ids, skip_special_tokens=False):
+            return tokenizer.decode(
+                token_ids,
+                skip_special_tokens=skip_special_tokens,
+                clean_up_tokenization_spaces=False,
+            )
+
+        def _sanitize_decoded_text(text):
+            if text is None:
+                return ""
+            if strip_replacement_char:
+                text = text.replace("�", "")
+            return text
+
+        def _compress_and_clip_text(text):
+            if text is None:
+                return ""
+            text = re.sub(r"(?:<\|image_pad\|>){4,}", "<|image_pad|>*", text)
+            text = re.sub(r"(?:<\|video_pad\|>){4,}", "<|video_pad|>*", text)
+            if len(text) > max_chars:
+                return text[:max_chars] + "...<truncated>"
+            return text
+
+        def _get_model_input_text(sample_idx):
+            if isinstance(raw_text_batch, list) and sample_idx < len(raw_text_batch):
+                return str(raw_text_batch[sample_idx])
+            if attention_mask is not None:
+                valid = attention_mask[sample_idx].bool()
+                ids = input_ids[sample_idx][valid][:max_tokens].detach().cpu()
+            else:
+                ids = input_ids[sample_idx][:max_tokens].detach().cpu()
+            return _safe_decode(ids)
+
+        for sample_idx in selected_indices:
+            sample_shift_labels = shift_labels[sample_idx]
+            sample_shift_logits = shift_logits[sample_idx]
+            sample_shift_pred_ids = shift_pred_ids[sample_idx]
+            sample_valid_mask = sample_shift_labels != -100
+
+            if not sample_valid_mask.any():
+                if enable_print:
+                    self.print_rank0(
+                        f"[debug-text] sample={sample_idx} has no valid text labels",
+                        flush=True,
+                    )
+                continue
+
+            # Align debug decode with CE training alignment: logits[:, :-1] -> labels[:, 1:]
+            target_ids = sample_shift_labels[sample_valid_mask][:max_tokens].detach().cpu()
+            pred_text_ids = sample_shift_pred_ids[sample_valid_mask][:max_tokens].detach().cpu()
+            target_text = _compress_and_clip_text(
+                _sanitize_decoded_text(_safe_decode(target_ids))
+            )
+            pred_text_valid_span = _compress_and_clip_text(
+                _sanitize_decoded_text(_safe_decode(pred_text_ids))
+            )
+
+            # Always record full predicted sequence for debugging artifacts.
+            if attention_mask is not None:
+                pred_full_ids = pred_ids[sample_idx][attention_mask[sample_idx].bool()][:max_tokens].detach().cpu()
+            else:
+                pred_full_ids = pred_ids[sample_idx][:max_tokens].detach().cpu()
+            pred_text_full = _compress_and_clip_text(
+                _sanitize_decoded_text(
+                    _safe_decode(
+                        pred_full_ids,
+                        skip_special_tokens=bool(full_skip_special_tokens),
+                    )
+                )
+            )
+
+            if sample_valid_mask.any():
+                sample_text_loss = nn.functional.cross_entropy(
+                    sample_shift_logits[sample_valid_mask],
+                    sample_shift_labels[sample_valid_mask],
+                    reduction="mean",
+                ).item()
+                sample_text_losses.append(sample_text_loss)
+            else:
+                sample_text_loss = None
+
+            has_action_token = (input_ids[sample_idx] == action_token_id).any().item()
+            sample_action_loss = None if has_action_token else 0.0
+
+            record = {
+                "epoch": int(epoch),
+                "step": int(step),
+                "sample_idx": int(sample_idx),
+                "dataset_name": (
+                    str(dataset_names[sample_idx])
+                    if isinstance(dataset_names, list) and sample_idx < len(dataset_names)
+                    else "unknown"
+                ),
+                "has_action_token": bool(has_action_token),
+                "batch_total_loss": total_loss,
+                "batch_text_loss": text_loss,
+                "batch_action_loss": action_loss,
+                "sample_text_loss": sample_text_loss,
+                "sample_action_loss": sample_action_loss,
+                "dataset_text": (
+                    _compress_and_clip_text(str(raw_text_batch[sample_idx]))
+                    if isinstance(raw_text_batch, list) and sample_idx < len(raw_text_batch)
+                    else ""
+                ),
+                "input_text": (
+                    _compress_and_clip_text(_get_model_input_text(sample_idx))
+                    if record_input_text
+                    else ""
+                ),
+                "target_text": target_text,
+                "pred_text_valid_span": pred_text_valid_span,
+                "pred_text_full": pred_text_full,
+            }
+            step_records.append(record)
+
+            if enable_print:
+                self.print_rank0(
+                    f"[debug-text] sample={sample_idx} dataset={record['dataset_name']} "
+                    f"sample_text_loss={sample_text_loss} sample_action_loss={sample_action_loss}",
+                    flush=True,
+                )
+                if record_input_text:
+                    self.print_rank0(
+                        f"[debug-text] sample={sample_idx} input={record['input_text']}",
+                        flush=True,
+                    )
+                self.print_rank0(
+                    f"[debug-text] sample={sample_idx} target(text-side)={target_text}",
+                    flush=True,
+                )
+                if pred_decode_mode in ["valid", "both"]:
+                    self.print_rank0(
+                        f"[debug-text] sample={sample_idx} pred(valid-span)={pred_text_valid_span}",
+                        flush=True,
+                    )
+                if pred_decode_mode in ["full", "both"]:
+                    self.print_rank0(
+                        f"[debug-text] sample={sample_idx} pred(full)={pred_text_full}",
+                        flush=True,
+                    )
+
+        if enable_txt:
+            txt_path = self.config.get(
+                "debug_text_action_txt_path", "debug_text_action_samples.txt"
+            )
+            txt_dir = os.path.dirname(txt_path)
+            if txt_dir:
+                os.makedirs(txt_dir, exist_ok=True)
+
+            summary = {
+                "epoch": int(epoch),
+                "step": int(step),
+                "batch_total_loss": total_loss,
+                "batch_text_loss": text_loss,
+                "batch_action_loss": action_loss,
+                "num_selected_samples": len(selected_indices),
+                "num_logged_samples": len(step_records),
+                "mean_sample_text_loss": (
+                    float(sum(sample_text_losses) / len(sample_text_losses))
+                    if len(sample_text_losses) > 0
+                    else None
+                ),
+                "only_no_action": bool(only_no_action),
+            }
+
+            with open(txt_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps({"type": "summary", **summary}, ensure_ascii=False) + "\n")
+                for record in step_records:
+                    f.write(json.dumps({"type": "sample", **record}, ensure_ascii=False) + "\n")
+
+            if enable_print:
+                self.print_rank0(
+                    f"[debug-txt] wrote {len(step_records)} samples to {txt_path}",
+                    flush=True,
+                )
 
     def fit(self):
         """
@@ -376,14 +698,28 @@ class QwenVlAct_Trainer:
                     self.timers("forward-compute", log_level=0).start(barrier=False)
                     outputs = self.model(**batch, mode="train")
                     self.timers("forward-compute").stop()
+                    # 尝试打印结果
+                    self._maybe_debug_print_losses_and_text(
+                        batch=batch,
+                        outputs=outputs,
+                        epoch=epoch,
+                        step=i,
+                    )
 
                     loss = outputs.loss
                     # Check for NaN loss
-                    if torch.isnan(loss):
+                    has_nan = torch.isnan(loss)
+                    if dist.is_available() and dist.is_initialized():
+                        nan_flag = has_nan.to(dtype=torch.int32)
+                        dist.all_reduce(nan_flag, op=dist.ReduceOp.MAX)
+                        has_nan = nan_flag.bool()
+
+                    if has_nan:
                         print(
                             f"Warning: NaN loss detected in epoch: {epoch}, step: {i}",
                             flush=True,
                         )
+                        self.optimizer.zero_grad()
                         # Keep timers consistent so the next iteration can proceed safely.
                         self.timers("interval-time").stop()
                         if i < len(self.train_dataloader) - 1:

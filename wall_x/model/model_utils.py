@@ -69,19 +69,61 @@ def load_wallx_processors(config):#加载主多模态 processor，然后往它�
     }
 
 
-def register_normalizers(config, model_path):
-    if config.get("norm_stats_path", None):
-        print(
-            f"loading customized action statistic dof from {config['norm_stats_path']}"
+def register_normalizers(config, model_path, norm_stats_paths=None):
+    """
+    Load normalization statistics from norm_stats_path(s).
+    
+    Args:
+        config: Model configuration
+        model_path: Path to model checkpoint
+        norm_stats_paths: Optional dict or list of norm_stats paths for multi-dataset:
+                         - dict: {"g1custom": "/path/to/stats.json", "another_repo": "/path/to/other_stats.json"}
+                         - list: ["/path/to/stats1.json", "/path/to/stats2.json"]
+                         - None: Uses config["norm_stats_path"] (single file)
+    """
+    # Merge action statistics from multiple sources
+    action_statistic_dof = {}
+    
+    # Determine which norm_stats_paths to load
+    if norm_stats_paths is not None:
+        if isinstance(norm_stats_paths, dict):
+            # norm_stats_paths is already {repo_id: path}
+            paths_to_load = norm_stats_paths
+        elif isinstance(norm_stats_paths, list):
+            # norm_stats_paths is a list of paths - load each and merge by repo_id
+            paths_to_load = norm_stats_paths
+        else:
+            paths_to_load = None
+    else:
+        paths_to_load = None
+    
+    # Load from provided paths or from config
+    if paths_to_load is not None:
+        if isinstance(paths_to_load, dict):
+            # paths_to_load is {repo_id: path}
+            for repo_id, path in paths_to_load.items():
+                if path and os.path.exists(path):
+                    print(f"Loading action statistic for {repo_id} from {path}")
+                    stats = json.load(open(path, "r"))
+                    action_statistic_dof.update(stats)
+        else:
+            # paths_to_load is a list of paths
+            for path in paths_to_load:
+                if path and os.path.exists(path):
+                    print(f"Loading action statistic from {path}")
+                    stats = json.load(open(path, "r"))
+                    action_statistic_dof.update(stats)
+    elif config.get("norm_stats_path", None):
+        # Single norm_stats_path from config
+        norm_stats_path = config["norm_stats_path"]
+        print(f"Loading customized action statistic dof from {norm_stats_path}")
+        action_statistic_dof = json.load(open(norm_stats_path, "r"))
+    
+    if not action_statistic_dof:
+        raise ValueError(
+            "No action statistics found. Please provide norm_stats_path or norm_stats_paths. "
+            "Refer to 'wall-x/scripts/compute_norm_stats.py' to compute stats."
         )
-        action_statistic_dof = json.load(open(config["norm_stats_path"], "r"))
-        
-    # if config.get("customized_action_statistic_dof", None):
-    #     action_statistic_dof = json.load(open(config["customized_action_statistic_dof"], "r"))
-    # else:
-    #     action_statistic_dof = default_action_statistic_dof
-
-    # action_statistic_dof = None
 
     if os.path.exists(model_path + "/normalizer_action.pth"):
         print(
@@ -97,8 +139,6 @@ def register_normalizers(config, model_path):
             min_key=config.get("min_key", "min"),
             delta_key=config.get("delta_key", "delta"),
         )
-
-    # print("action_statistic_dof",action_statistic_dof)
 
     if os.path.exists(model_path + "/normalizer_propri.pth"):
         print(
